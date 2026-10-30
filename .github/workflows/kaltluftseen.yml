@@ -27,7 +27,8 @@ jobs:
       - name: Pakete
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq gdal-bin python3-gdal python3-numpy python3-scipy python3-numba
+          sudo apt-get install -y -qq gdal-bin python3-gdal python3-numpy python3-scipy
+          sudo apt-get install -y -qq python3-numba || sudo pip3 install --break-system-packages -q "numba==0.60.0"
           python3 -c "import numba, numpy; from osgeo import gdal; print(numba.__version__, numpy.__version__, gdal.__version__)"
       - name: Cache aus Release holen
         run: |
@@ -35,7 +36,10 @@ jobs:
           gh release download "cache-$NAME" -D cache -R "$GITHUB_REPOSITORY" || echo "noch kein Cache"
           ls cache | wc -l; du -sh cache
       - name: Fehlende Eingangsdaten laden
-        run: python3 scripts/fetch.py --name "$NAME" --canton "$CANTON" --cache cache
+        run: |
+          mkdir -p out
+          set -o pipefail
+          python3 scripts/fetch.py --name "$NAME" --canton "$CANTON" --cache cache 2>&1 | tee out/fetch_$NAME.txt
       - name: Cache sichern
         if: always()
         run: |
@@ -50,9 +54,16 @@ jobs:
           (cd cache && xargs -r -n 20 gh release upload "$T" -R "$GITHUB_REPOSITORY" --clobber) < new.txt
       - name: Kaltluftseen suchen
         run: |
-          mkdir -p out
           set -o pipefail
           /usr/bin/time -v python3 scripts/kaltluftseen.py --name "$NAME" --cache cache --out out ${{ github.event.inputs.args }} 2>&1 | tee out/log_$NAME.txt
+      - name: Logs in Branch logs
+        if: always()
+        run: |
+          mkdir -p /tmp/l && cp out/*.txt /tmp/l/ 2>/dev/null || true
+          ls cache > /tmp/l/cache_inhalt.txt 2>/dev/null || true
+          cd /tmp/l && git init -q && git checkout -q -b logs && git add -A
+          git -c user.name=ci -c user.email=ci@localhost commit -q -m "Lauf ${{ github.run_id }} (${{ job.status }})" || exit 0
+          git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" logs
       - uses: actions/upload-artifact@v4
         if: always()
         with: {name: "kaltluftseen-${{ env.NAME }}", path: out, retention-days: 14}
