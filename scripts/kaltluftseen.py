@@ -593,7 +593,7 @@ def main():
     # Vegetation
     ap.add_argument("--veg-k", type=float, default=0.4, help="wirksamer Anteil der Vegetationshöhe als Damm")
     ap.add_argument("--veg-min", type=float, default=3, help="Vegetation ab dieser Höhe (m) staut")
-    ap.add_argument("--veg-max", type=float, default=6, help="höchste wirksame Dammhöhe durch Vegetation (m)")
+    ap.add_argument("--veg-max", type=float, default=12, help="höchste wirksame Dammhöhe durch Vegetation (m)")
     ap.add_argument("--veg-por", type=float, default=0.3,
                     help="Talverengung: Durchlässigkeit von Wald/Hecke im Querschnitt (1 = wie offenes Gelände)")
     # Talverengung
@@ -678,7 +678,13 @@ def main():
     z1 = np.zeros(1, np.float32)
     st1 = pool_stats(lab1, F1, Z, V, dam_id, z1, z1, np.zeros(roots1.size, np.float32), raised1, roots1.size,
                      a.veg_min, 0.0)
-    kinds1 = np.where(barrier[roots1] > 0.2, "Vegetation", "Senke")
+    # Vegetation, wenn der Seespiegel ohne Bäume tiefer läge (nicht nur nach der Überlaufstelle beurteilt)
+    F0, _, _, _ = priority_flood(np.where(valid, Z, np.nan).astype(np.float32), valid, nr, nc)
+    lift = np.zeros(roots1.size, np.float32)
+    rmask = lab1 >= 0
+    np.maximum.at(lift, lab1[rmask], (F1 - F0)[rmask])
+    del F0, rmask
+    kinds1 = np.where(lift > np.maximum(0.5, 0.5 * st1[3]), "Vegetation", "Senke")
     log(f"  {roots1.size} gefüllte Bereiche")
 
     # 2) Talverengungen
@@ -753,7 +759,8 @@ def main():
                               area_open=n_open * cell / 1e4, vol=v, dmax=dm, vol_total=v_total, dmax_total=dmax_total,
                               dmean=v / max(n_area * cell, 1), level=float(F[roots[p]]), ground=float(Z[im]),
                               stau=float(stau[p]), w0=float(w0[p]) if w0 is not None else 0.0,
-                              wup=float(wup[p]) if wup is not None else 0.0, sx=sx, sy=sy, veg_spill=float(V[roots[p]])))
+                              wup=float(wup[p]) if wup is not None else 0.0,
+                              lift=float(lift[p]) if which == 1 else 0.0, sx=sx, sy=sy, veg_spill=float(V[roots[p]])))
 
     collect(st1, roots1, F1, kinds1, lab1, 1)
     if damtab is not None:
@@ -784,7 +791,7 @@ def main():
             g = g.Clone(); g.Transform(to84)
         p["geom"] = g
         reason = {"Senke": "geschlossene Mulde",
-                  "Vegetation": f"Abfluss durch Wald/Hecke gestaut (Vegetation am Abfluss {p['veg_spill']:.0f} m)",
+                  "Vegetation": f"Abfluss durch Wald/Hecke gestaut, Bäume heben den Seespiegel um {p['lift']:.1f} m",
                   "Talverengung": f"Engstelle ({p['w0']:.0f} m breit, Tal oberhalb "
                                   f"{'über ' + str(int(2 * a.wmax)) if p['wup'] >= 2 * a.wmax else round(p['wup'])} m), "
                                   f"Rückstau über das Fliessniveau max. {p['dmax']:.1f} m; mit fliessender Kaltluft "
@@ -829,18 +836,18 @@ def write_outputs(a, pools):
             f.write("</trk>\n")
         f.write("</gpx>\n")
     keys = ["id", "kind", "vol", "area", "area_open", "dmax", "dmean", "vol_total", "dmax_total", "w0", "wup", "level", "ground", "lat", "lon",
-            "slat", "slon", "veg_spill"]
+            "slat", "slon", "veg_spill", "lift"]
     with open(base + ".csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["id", "typ", "volumen_m3", "flaeche_ha", "flaeche_offen_ha", "tiefe_max_m", "tiefe_mittel_m",
                     "volumen_inkl_fliessend_m3", "tiefe_inkl_fliessend_m", "engstelle_breite_m", "tal_oberhalb_breite_m", "seespiegel_m", "boden_tiefster_punkt_m", "lat", "lon", "abfluss_lat",
-                    "abfluss_lon", "vegetation_abfluss_m"])
+                    "abfluss_lon", "vegetation_abfluss_m", "stau_durch_baeume_m"])
         for p in pools:
             w.writerow([p["id"], p["kind"], round(p["vol"]), round(p["area"], 2), round(p["area_open"], 2),
                         round(p["dmax"], 2), round(p["dmean"], 2), *((round(p["vol_total"]), round(p["dmax_total"], 1), round(p["w0"]), round(p["wup"]))
                           if p["kind"] == "Talverengung" else ("", "", "", "")),
                         round(p["level"], 1), round(p["ground"], 1), f"{p['lat']:.6f}", f"{p['lon']:.6f}",
-                        f"{p['slat']:.6f}", f"{p['slon']:.6f}", round(p["veg_spill"], 1)])
+                        f"{p['slat']:.6f}", f"{p['slon']:.6f}", round(p["veg_spill"], 1), round(p["lift"], 1)])
     feats = []
     for p in pools:
         if p["geom"] is None:
