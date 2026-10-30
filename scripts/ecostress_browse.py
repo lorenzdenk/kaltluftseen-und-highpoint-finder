@@ -53,6 +53,7 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--min-stationen", type=int, default=3)
     ap.add_argument("--min-schnee", type=float, default=1)
+    ap.add_argument("--top", type=int, default=20, help="Vorschaubilder nur für die N klarsten Aufnahmen")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     rows = list(csv.DictReader(open(a.csv)))
@@ -65,6 +66,7 @@ def main():
         key = x["datum"] + "T" + x["zeit_utc"][:5]
         groups.setdefault(key, {"tg": tg, "g": []})["g"].append((x["kachel"], x["granule"]))
     summ = []
+    imgs = {}
     for key, d in sorted(groups.items()):
         lst = None
         cld = None
@@ -83,10 +85,13 @@ def main():
             continue
         valid = ~np.isnan(lst[..., 0])
         # Vorschaubild: kein Wert = schwarz; Wolkenmaske: hell = Wolke
-        data = valid & (lst.sum(-1) > 30)
-        cloudy = valid & (np.nan_to_num(cld[..., 0]) > 127)
-        cover = data.sum() / max(valid.sum(), 1)
-        cfrac = cloudy.sum() / max(data.sum(), 1)
+        data = valid & (lst.max(-1) > 40)  # schwarz = keine Daten / maskiert
+        cl = np.nan_to_num(cld)
+        cloudy = valid & (cl[..., 0] > 150) & (cl[..., 2] < 110)  # Wolkenmaske: rot = Wolke, blau = klar
+        cover = (data & ~cloudy).sum() / max(valid.sum(), 1)
+        cfrac = (cloudy | ~data).sum() / max(valid.sum(), 1)
+        if valid.sum() / valid.size < 0.5:
+            continue
         name = key.replace(":", "")
         im = Image.fromarray(np.nan_to_num(lst).clip(0, 255).astype(np.uint8))
         im2 = Image.fromarray((np.nan_to_num(cld).clip(0, 255)).astype(np.uint8))
@@ -95,10 +100,13 @@ def main():
         both.paste(im2, (im.width + 10, 30))
         ImageDraw.Draw(both).text((5, 5), f"{key} UTC  Daten {cover:.0%}  Wolken {cfrac:.0%}  Schnee " +
                                   " ".join(f"{k}={v:g}" for k, v in d["tg"].items()), fill="black")
-        both.save(os.path.join(a.out, f"eco_{name}.png"))
+        imgs[key] = both
         summ.append((key, f"{cover:.2f}", f"{cfrac:.2f}", " ".join(f"{k}={v:g}" for k, v in d["tg"].items()),
                      " ".join(g for _, g in d["g"])))
         print(key, f"Daten {cover:.0%} Wolken {cfrac:.0%}")
+    summ.sort(key=lambda r: -float(r[1]))
+    for r in summ[:a.top]:
+        imgs[r[0]].save(os.path.join(a.out, f"eco_{r[0].replace(':', '')}.png"))
     with open(os.path.join(a.out, "uebersicht.csv"), "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["zeit_utc", "datenanteil", "wolkenanteil", "schnee_tg", "granules"])
