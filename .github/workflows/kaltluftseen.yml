@@ -9,6 +9,7 @@ on:
     inputs:
       name: {description: "Name des Gebiets", default: "thurgau"}
       canton: {description: "Kantonsnummer (BFS), 0 = bbox", default: "20"}
+      bbox: {description: "W,S,E,N in Grad (nur wenn Kanton 0)", default: "8.65,47.36,9.52,47.71"}
       args: {description: "zusätzliche Parameter für kaltluftseen.py, z.B. --res 4 --min-stau 2", default: ""}
 permissions:
   contents: write
@@ -39,7 +40,7 @@ jobs:
         run: |
           mkdir -p out
           set -o pipefail
-          python3 scripts/fetch.py --name "$NAME" --canton "$CANTON" --cache cache 2>&1 | tee out/fetch_$NAME.txt
+          python3 scripts/fetch.py --name "$NAME" --canton "$CANTON" --bbox "${{ github.event.inputs.bbox || '8.65,47.36,9.52,47.71' }}" --cache cache 2>&1 | tee out/fetch_$NAME.txt
       - name: Cache sichern
         if: always()
         run: |
