@@ -228,7 +228,7 @@ def main_child(parent, acc):
 
 
 @njit(cache=True)
-def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin, acap, qprod, gred, hmax, wmax):
+def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin, acap, qprod, gred, hmax, wmax, maxwh):
     """Setzt virtuelle Dämme in W. Rückgabe Dammtabelle: (zelle, niveau, h, zufluss_m3s, breite_m)."""
     step = 0.5
     K = int(wmax / (res * step))
@@ -331,6 +331,8 @@ def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin
             a, w, n, opn = _section(E, nr, nc, r0, c0, pbr, pbc, step, K, lev, buf_r, buf_c)
             if opn > 0 or n == 0:
                 continue
+            if w * res > maxwh * h:  # kein Tal, sondern flaches/offenes Gelände: kein virtueller Damm
+                continue
             nd += 1
             d_cell[nd - 1] = best
             d_lev[nd - 1] = lev
@@ -426,7 +428,83 @@ def constriction(lab, raised, dam_id, d_cell, d_q, d_pr, d_pc, root_dam, levels,
         ww = 2 * wmax if opn == 1 else w * res
         if ww > wup[p]:
             wup[p] = ww
-    return w0, wup
+    return w0, wup, dam_pool
+
+
+@njit(cache=True)
+def stau_excess(lab, raised, dam_id, dam_pool, d_lev, F, Z, nr, nc, npool, xmin):
+    """Rückstau je Zelle: Seespiegel minus Fliessniveau der Kaltluft ohne Stau. Das Fliessniveau wird von den
+    überstauten Querschnitten desselben Tals (Niveau ohne Rückstau) in den See hinein übertragen (nächster Querschnitt).
+    Rückgabe je See: Volumen, grösste Höhe, Zelle der grössten Höhe, Anzahl Zellen mit Rückstau >= xmin."""
+    N = lab.size
+    Lp = np.full(N, np.nan, np.float32)
+    q = np.empty(N, np.int64)
+    qt = 0
+    for i in range(N):
+        p = lab[i]
+        if p >= 0 and raised[i] and dam_id[i] > 0 and dam_pool[dam_id[i] - 1] == p:
+            Lp[i] = d_lev[dam_id[i] - 1]
+            q[qt] = i
+            qt += 1
+    qh = 0
+    while qh < qt:
+        i = q[qh]
+        qh += 1
+        r = i // nc
+        c = i - r * nc
+        for k in range(8):
+            rr = r + N8R[k]
+            cc = c + N8C[k]
+            if rr < 0 or cc < 0 or rr >= nr or cc >= nc:
+                continue
+            j = rr * nc + cc
+            if lab[j] == lab[i] and raised[j] and not (Lp[j] == Lp[j]):
+                Lp[j] = Lp[i]
+                q[qt] = j
+                qt += 1
+    xvol = np.zeros(npool, np.float64)
+    xmax = np.zeros(npool, np.float32)
+    ximax = np.full(npool, -1, np.int64)
+    xcnt = np.zeros(npool, np.int64)
+    for i in range(N):
+        p = lab[i]
+        if p < 0 or not raised[i] or not (Lp[i] == Lp[i]):
+            continue
+        base = Z[i] if Z[i] > Lp[i] else Lp[i]
+        ex = F[i] - base
+        if ex <= 0:
+            continue
+        xvol[p] += ex
+        if ex > xmax[p]:
+            xmax[p] = ex
+            ximax[p] = i
+        if ex >= xmin:
+            xcnt[p] += 1
+    return xvol, xmax, ximax, xcnt
+
+
+@njit(cache=True)
+def mainstem_stau(root_dam, levels, d_cell, d_lev, dam_id, child, Z, maxsteps):
+    """Rückstau entlang des Haupttals oberhalb der Engstelle (Kette der grössten Zuflüsse): grösste Differenz
+    Seespiegel minus eigenes Fliessniveau der Querschnitte auf dieser Kette. Ein Seitental, das nur vom dickeren
+    Kaltluftstrom des Haupttals eingestaut wird, zählt damit nicht als Engstelle."""
+    npool = root_dam.size
+    out = np.zeros(npool, np.float32)
+    for p in range(npool):
+        if root_dam[p] <= 0:
+            continue
+        lev = levels[p]
+        j = d_cell[root_dam[p] - 1]
+        for _ in range(maxsteps):
+            j = child[j]
+            if j < 0 or Z[j] >= lev:
+                break
+            d = dam_id[j]
+            if d > 0 and d_cell[d - 1] == j:
+                ex = lev - d_lev[d - 1]
+                if ex > out[p]:
+                    out[p] = ex
+    return out
 
 
 def label_pools(F, W, src, valid, eps):
@@ -503,22 +581,27 @@ def main():
     # Talverengung
     ap.add_argument("--dam-spacing", type=float, default=50, help="Abstand der Querschnitte (m)")
     ap.add_argument("--amin", type=float, default=0.1, help="Querschnitte ab Einzugsgebiet (km²)")
-    ap.add_argument("--acap", type=float, default=20, help="Einzugsgebiet höchstens (km²) für die Kaltluftmenge")
+    ap.add_argument("--acap", type=float, default=10, help="Einzugsgebiet höchstens (km²) für die Kaltluftmenge")
     ap.add_argument("--prod", type=float, default=12, help="Kaltluftproduktion (m³ je m² und Stunde)")
     ap.add_argument("--dT", type=float, default=3, help="Temperaturdefizit der Kaltluft (K)")
-    ap.add_argument("--hmax", type=float, default=50, help="grösste Kaltluftmächtigkeit (m)")
-    ap.add_argument("--wmax", type=float, default=1500, help="halbe Querschnittsbreite höchstens (m)")
+    ap.add_argument("--hmax", type=float, default=40, help="grösste Kaltluftmächtigkeit (m)")
+    ap.add_argument("--wmax", type=float, default=1000, help="halbe Querschnittsbreite höchstens (m)")
+    ap.add_argument("--max-wh", type=float, default=150,
+                    help="Querschnitt nur, wenn Breite höchstens so viel mal die Kaltluftmächtigkeit (sonst offenes Gelände)")
     ap.add_argument("--qfrac", type=float, default=0.3,
                     help="Rückstau nur gegen Querschnitte mit mind. diesem Anteil der Kaltluftmenge am Abfluss")
     ap.add_argument("--min-widen", type=float, default=2.0,
                     help="Talverengung: Tal oberhalb auf Seespiegelhöhe mind. so viel mal breiter als die Engstelle")
-    ap.add_argument("--min-stau", type=float, default=1.0, help="Talverengung: Mindest-Rückstau (m)")
+    ap.add_argument("--stem-km", type=float, default=3, help="Haupttal so weit oberhalb der Engstelle prüfen (km)")
+    ap.add_argument("--min-stau", type=float, default=2.0, help="Talverengung: Mindest-Rückstau (m)")
     # Filter
     ap.add_argument("--min-depth", type=float, default=1.0, help="Mindesttiefe (m)")
     ap.add_argument("--min-area", type=float, default=0.2, help="Mindestfläche offenes Gelände (ha)")
     ap.add_argument("--min-volume", type=float, default=1000, help="Mindestvolumen (m³)")
     ap.add_argument("--no-dams", action="store_true", help="Talverengungen nicht rechnen")
     ap.add_argument("--all", action="store_true", help="nicht auf Kantonsgrenze beschränken")
+    ap.add_argument("--top", type=int, default=200, help="zusätzliche GPX-Datei mit den N grössten Seen")
+    ap.add_argument("--window", help="nur Ausschnitt rechnen: x0,y0,x1,y1 in LV95 (m)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
@@ -538,6 +621,8 @@ def main():
         ext = [gdal.Info(f, format="json")["cornerCoordinates"] for f in dtm_files]
         x0 = min(e["lowerLeft"][0] for e in ext); y0 = min(e["lowerLeft"][1] for e in ext)
         x1 = max(e["upperRight"][0] for e in ext); y1 = max(e["upperRight"][1] for e in ext)
+    if a.window:
+        x0, y0, x1, y1 = map(float, a.window.split(","))
     m = a.margin_km * 1000
     r = a.res
     bounds = [math.floor((x0 - m) / r) * r, math.floor((y0 - m) / r) * r,
@@ -589,8 +674,8 @@ def main():
         gred = 9.81 * a.dT / 283.0
         child = main_child(parentZ, acc)
         damtab = build_dams(E, W, dam_id, parentZ, child, acc, max(int(round(60 / r)), 4), nr, nc, r, max(int(round(a.dam_spacing / r)), 1),
-                            a.amin * 1e6, a.acap * 1e6, a.prod / 3600.0, gred, a.hmax, a.wmax)
-        del parentZ, child
+                            a.amin * 1e6, a.acap * 1e6, a.prod / 3600.0, gred, a.hmax, a.wmax, a.max_wh)
+        del parentZ
         log(f"  {damtab[0].size} Querschnitte, Mächtigkeit Median {np.median(damtab[2]) if damtab[2].size else 0:.1f} m")
         log("Füllen: mit Dämmen")
         F2, src2, _, _ = priority_flood(W, valid, nr, nc)
@@ -599,8 +684,11 @@ def main():
         qroot = np.where(rd > 0, damtab[3][np.maximum(rd - 1, 0)], np.float32(0)).astype(np.float32)
         st2 = pool_stats(lab2, F2, Z, V, dam_id, damtab[1], damtab[3], qroot, raised2, roots2.size, a.veg_min,
                          a.qfrac)
-        w0, wup = constriction(lab2, raised2, dam_id, damtab[0], damtab[3], damtab[5], damtab[6], rd.astype(np.int64),
-                               F2[roots2], E, nr, nc, r, a.wmax, a.qfrac)
+        w0, wup, dam_pool = constriction(lab2, raised2, dam_id, damtab[0], damtab[3], damtab[5], damtab[6],
+                                         rd.astype(np.int64), F2[roots2], E, nr, nc, r, a.wmax, a.qfrac)
+        xst = stau_excess(lab2, raised2, dam_id, dam_pool, damtab[1], F2, Z, nr, nc, roots2.size, 0.5)
+        mstau = mainstem_stau(rd, F2[roots2], damtab[0], damtab[1], dam_id, child, Z, int(a.stem_km * 1000 / r))
+        del child
         log(f"  {roots2.size} gefüllte Bereiche")
         del W, src2
 
@@ -613,33 +701,39 @@ def main():
 
     pools = []
 
-    def collect(st, roots, F, kinds, lab, which, w0=None, wup=None):
+    def collect(st, roots, F, kinds, lab, which, w0=None, wup=None, xst=None, mstau=None):
         cnt, cnt_open, vol, dmax, imax, stau, nsub = st
         for p in range(roots.size):
-            v = vol[p] * cell
             kind = kinds[p]
             if kind == "x":
                 continue
-            if dmax[p] < a.min_depth or cnt_open[p] * cell / 1e4 < a.min_area or v < a.min_volume:
+            v_total = vol[p] * cell
+            dmax_total = float(dmax[p])
+            if kind == "Talverengung":
+                # nur der Rückstau zählt, nicht die ohnehin fliessende Kaltluftschicht
+                if nsub[p] == 0 or wup[p] < a.min_widen * w0[p] or xst[1][p] < a.min_stau or mstau[p] < a.min_stau:
+                    continue
+                v, dm, im, n_area, n_open = xst[0][p] * cell, float(xst[1][p]), xst[2][p], xst[3][p], xst[3][p]
+            else:
+                v, dm, im, n_area, n_open = v_total, dmax_total, imax[p], cnt[p], cnt_open[p]
+            if dm < a.min_depth or n_open * cell / 1e4 < a.min_area or v < a.min_volume:
                 continue
-            if kind == "Talverengung" and (stau[p] < a.min_stau or nsub[p] == 0 or wup[p] < a.min_widen * w0[p]):
-                continue
-            X, Y = xy(imax[p])
+            X, Y = xy(im)
             if border is not None and not a.all:
                 pt = ogr.Geometry(ogr.wkbPoint); pt.AddPoint_2D(X, Y)
                 if not border.Contains(pt):
                     continue
             sx, sy = xy(roots[p])
-            pools.append(dict(kind=kind, which=which, lab=p, X=X, Y=Y, area=cnt[p] * cell / 1e4,
-                              area_open=cnt_open[p] * cell / 1e4, vol=v, dmax=float(dmax[p]),
-                              dmean=v / (cnt[p] * cell), level=float(F[roots[p]]), ground=float(Z[imax[p]]),
+            pools.append(dict(kind=kind, which=which, lab=p, X=X, Y=Y, area=n_area * cell / 1e4,
+                              area_open=n_open * cell / 1e4, vol=v, dmax=dm, vol_total=v_total, dmax_total=dmax_total,
+                              dmean=v / max(n_area * cell, 1), level=float(F[roots[p]]), ground=float(Z[im]),
                               stau=float(stau[p]), w0=float(w0[p]) if w0 is not None else 0.0,
                               wup=float(wup[p]) if wup is not None else 0.0, sx=sx, sy=sy, veg_spill=float(V[roots[p]])))
 
     collect(st1, roots1, F1, kinds1, lab1, 1)
     if damtab is not None:
         kinds2 = np.where(dam_id[roots2] > 0, "Talverengung", "x")
-        collect(st2, roots2, F2, kinds2, lab2, 2, w0, wup)
+        collect(st2, roots2, F2, kinds2, lab2, 2, w0, wup, xst, mstau)
     pools.sort(key=lambda d: -d["vol"])
     log(f"{len(pools)} Kaltluftseen: " + ", ".join(f"{k} {sum(p['kind'] == k for p in pools)}"
                                                  for k in ("Senke", "Vegetation", "Talverengung")))
@@ -665,9 +759,10 @@ def main():
         p["geom"] = g
         reason = {"Senke": "geschlossene Mulde",
                   "Vegetation": f"Abfluss durch Wald/Hecke gestaut (Vegetation am Abfluss {p['veg_spill']:.0f} m)",
-                  "Talverengung": f"Talverengung ({p['w0']:.0f} m breit, oberhalb "
+                  "Talverengung": f"Engstelle ({p['w0']:.0f} m breit, Tal oberhalb "
                                   f"{'über ' + str(int(2 * a.wmax)) if p['wup'] >= 2 * a.wmax else round(p['wup'])} m), "
-                                  f"Rückstau {p['stau']:.1f} m"}[p["kind"]]
+                                  f"Rückstau über das Fliessniveau max. {p['dmax']:.1f} m; mit fliessender Kaltluft "
+                                  f"{fmt_vol(p['vol_total'])}, bis {p['dmax_total']:.0f} m tief"}[p["kind"]]
         p["name"] = f"KLS {k} {fmt_vol(p['vol'])}"
         p["desc"] = (f"{p['kind']}: {reason}. Volumen {fmt_vol(p['vol'])}, Fläche {p['area']:.1f} ha, "
                      f"Tiefe max. {p['dmax']:.1f} m / Ø {p['dmean']:.1f} m, Seespiegel {p['level']:.0f} m ü. M., "
@@ -683,13 +778,14 @@ def write_outputs(a, pools):
             'xmlns="http://www.topografix.com/GPX/1/1">\n<metadata><name>Kaltluftseen %s</name>'
             '<desc>Datenquelle: swissALTI3D © swisstopo; Vegetationshöhenmodell LiDAR LFI, BAFU/WSL. Modellrechnung, '
             'nicht gemessen.</desc></metadata>\n' % escape(a.name.capitalize()))
-    with open(base + ".gpx", "w") as f:
-        f.write(head)
-        for p in pools:
-            f.write(f'<wpt lat="{p["lat"]:.6f}" lon="{p["lon"]:.6f}"><ele>{p["ground"]:.1f}</ele>'
-                    f'<name>{escape(p["name"])}</name><desc>{escape(p["desc"])}</desc>'
-                    f'<type>{p["kind"]}</type></wpt>\n')
-        f.write("</gpx>\n")
+    for path, sel in ((base + ".gpx", pools), (base + f"_top{a.top}.gpx", pools[:a.top])):
+        with open(path, "w") as f:
+            f.write(head)
+            for p in sel:
+                f.write(f'<wpt lat="{p["lat"]:.6f}" lon="{p["lon"]:.6f}"><ele>{p["ground"]:.1f}</ele>'
+                        f'<name>{escape(p["name"])}</name><desc>{escape(p["desc"])}</desc>'
+                        f'<type>{p["kind"]}</type></wpt>\n')
+            f.write("</gpx>\n")
     with open(base + "_umrisse.gpx", "w") as f:
         f.write(head)
         for p in pools:
@@ -706,16 +802,17 @@ def write_outputs(a, pools):
                                              for i in range(ring.GetPointCount())) + "</trkseg>")
             f.write("</trk>\n")
         f.write("</gpx>\n")
-    keys = ["id", "kind", "vol", "area", "area_open", "dmax", "dmean", "stau", "w0", "wup", "level", "ground", "lat", "lon",
+    keys = ["id", "kind", "vol", "area", "area_open", "dmax", "dmean", "vol_total", "dmax_total", "w0", "wup", "level", "ground", "lat", "lon",
             "slat", "slon", "veg_spill"]
     with open(base + ".csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["id", "typ", "volumen_m3", "flaeche_ha", "flaeche_offen_ha", "tiefe_max_m", "tiefe_mittel_m",
-                    "rueckstau_m", "engstelle_breite_m", "tal_oberhalb_breite_m", "seespiegel_m", "boden_tiefster_punkt_m", "lat", "lon", "abfluss_lat",
+                    "volumen_inkl_fliessend_m3", "tiefe_inkl_fliessend_m", "engstelle_breite_m", "tal_oberhalb_breite_m", "seespiegel_m", "boden_tiefster_punkt_m", "lat", "lon", "abfluss_lat",
                     "abfluss_lon", "vegetation_abfluss_m"])
         for p in pools:
             w.writerow([p["id"], p["kind"], round(p["vol"]), round(p["area"], 2), round(p["area_open"], 2),
-                        round(p["dmax"], 2), round(p["dmean"], 2), *((round(p["stau"], 2), round(p["w0"]), round(p["wup"])) if p["kind"] == "Talverengung" else ("", "", "")),
+                        round(p["dmax"], 2), round(p["dmean"], 2), *((round(p["vol_total"]), round(p["dmax_total"], 1), round(p["w0"]), round(p["wup"]))
+                          if p["kind"] == "Talverengung" else ("", "", "", "")),
                         round(p["level"], 1), round(p["ground"], 1), f"{p['lat']:.6f}", f"{p['lon']:.6f}",
                         f"{p['slat']:.6f}", f"{p['slon']:.6f}", round(p["veg_spill"], 1)])
     feats = []
@@ -727,7 +824,7 @@ def write_outputs(a, pools):
         feats.append({"type": "Feature", "properties": props, "geometry": json.loads(p["geom"].ExportToJson())})
     with open(base + ".geojson", "w") as f:
         json.dump({"type": "FeatureCollection", "features": feats}, f, ensure_ascii=False)
-    log("geschrieben:", ", ".join(os.path.basename(base) + s for s in (".gpx", "_umrisse.gpx", ".csv", ".geojson")))
+    log("geschrieben:", ", ".join(os.path.basename(base) + s for s in (".gpx", f"_top{a.top}.gpx", "_umrisse.gpx", ".csv", ".geojson")))
 
 
 if __name__ == "__main__":

@@ -59,7 +59,7 @@ jobs:
       - name: Logs in Branch logs
         if: always()
         run: |
-          mkdir -p /tmp/l && cp out/*.txt /tmp/l/ 2>/dev/null || true
+          mkdir -p /tmp/l && cp out/* /tmp/l/ 2>/dev/null || true
           ls cache > /tmp/l/cache_inhalt.txt 2>/dev/null || true
           cd /tmp/l && git init -q && git checkout -q -b logs && git add -A
           git -c user.name=ci -c user.email=ci@localhost commit -q -m "Lauf ${{ github.run_id }} (${{ job.status }})" || exit 0
