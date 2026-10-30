@@ -33,6 +33,10 @@ Ausschnitt.
 Nicht berücksichtigt: Gebäude und Lärmschutzwände (nicht im Geländemodell), Wind, Durchlässe unter Dämmen
 (ein Bahndamm mit Bachdurchlass gilt als dicht, für Kaltluft meist zutreffend).
 
+**Nur Senken:** `--nur-senken --out-name thurgau_senken --min-volume 5000` rechnet nur Geländemulden (ohne Bäume,
+ohne Talverengungen). Für jeden See wird das **Kaltluft-Einzugsgebiet** bestimmt (alle Flächen, deren Fliessweg zuerst
+in diesen See führt) und die Füllzeit (Volumen ÷ Einzugsgebiet × Produktionsrate).
+
 ## Ausgabe (Release `kaltluftseen-<name>`)
 
 - `kaltluftseen_<name>.gpx`: ein Wegpunkt je See an der tiefsten Stelle. Name `KLS <Rang> <Volumen>`, sortiert nach
