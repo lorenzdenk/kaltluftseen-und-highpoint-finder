@@ -523,6 +523,24 @@ def mainstem_stau(root_dam, levels, d_cell, d_lev, dam_id, child, Z, maxsteps):
     return out
 
 
+@njit(cache=True)
+def catchments(lab, parent, order, npool):
+    """Kaltluft-Einzugsgebiet je See: alle Zellen, deren Fliessweg zuerst in diesen See führt (Anzahl Zellen)."""
+    c = np.full(lab.size, -1, np.int32)
+    cnt = np.zeros(npool, np.int64)
+    for k in range(order.size):
+        i = order[k]
+        if lab[i] >= 0:
+            c[i] = lab[i]
+        else:
+            p = parent[i]
+            if p >= 0:
+                c[i] = c[p]
+        if c[i] >= 0:
+            cnt[c[i]] += 1
+    return cnt
+
+
 def label_pools(F, W, src, valid, eps):
     raised = valid & (F - W > eps) & (src >= 0)
     roots, inv = np.unique(src[raised], return_inverse=True)
@@ -619,9 +637,15 @@ def main():
     ap.add_argument("--min-volume", type=float, default=1000, help="Mindestvolumen (m³)")
     ap.add_argument("--no-dams", action="store_true", help="Talverengungen nicht rechnen")
     ap.add_argument("--all", action="store_true", help="nicht auf Kantonsgrenze beschränken")
+    ap.add_argument("--nur-senken", action="store_true", help="nur Geländesenken (ohne Bäume und Talverengungen)")
+    ap.add_argument("--out-name", help="Name der Ausgabedateien (Standard: --name)")
     ap.add_argument("--top", type=int, default=200, help="zusätzliche GPX-Datei mit den N grössten Seen")
     ap.add_argument("--window", help="nur Ausschnitt rechnen: x0,y0,x1,y1 in LV95 (m)")
     a = ap.parse_args()
+    if a.nur_senken:
+        a.no_dams = True
+        a.veg_k = 0.0
+    a.out_name = a.out_name or a.name
     os.makedirs(a.out, exist_ok=True)
     t0 = time.time()
 
@@ -672,8 +696,9 @@ def main():
     # 1) Senken und Vegetationsstau
     log("Füllen: Gelände + Vegetation")
     F1, src1, parent, order = priority_flood(E, valid, nr, nc)
-    del parent, order
     lab1, roots1, raised1 = label_pools(F1, E, src1, valid, 0.05)
+    ezg1 = catchments(lab1, parent, order, roots1.size)
+    del parent, order
     dam_id = np.zeros(Z.size, np.int32)
     z1 = np.zeros(1, np.float32)
     st1 = pool_stats(lab1, F1, Z, V, dam_id, z1, z1, np.zeros(roots1.size, np.float32), raised1, roots1.size,
@@ -760,7 +785,8 @@ def main():
                               dmean=v / max(n_area * cell, 1), level=float(F[roots[p]]), ground=float(Z[im]),
                               stau=float(stau[p]), w0=float(w0[p]) if w0 is not None else 0.0,
                               wup=float(wup[p]) if wup is not None else 0.0,
-                              lift=float(lift[p]) if which == 1 else 0.0, sx=sx, sy=sy, veg_spill=float(V[roots[p]])))
+                              lift=float(lift[p]) if which == 1 else 0.0,
+                              ezg=float(ezg1[p] * cell / 1e4) if which == 1 else 0.0, sx=sx, sy=sy, veg_spill=float(V[roots[p]])))
 
     collect(st1, roots1, F1, kinds1, lab1, 1)
     if damtab is not None:
@@ -796,9 +822,12 @@ def main():
                                   f"{'über ' + str(int(2 * a.wmax)) if p['wup'] >= 2 * a.wmax else round(p['wup'])} m), "
                                   f"Rückstau über das Fliessniveau max. {p['dmax']:.1f} m; mit fliessender Kaltluft "
                                   f"{fmt_vol(p['vol_total'])}, bis {p['dmax_total']:.0f} m tief"}[p["kind"]]
-        p["name"] = f"KLS {k} {fmt_vol(p['vol'])}"
+        p["fill_h"] = p["vol"] / (p["ezg"] * 1e4 * a.prod) if p["ezg"] > 0 else 0.0
+        p["name"] = f"KLS {k} {fmt_vol(p['vol'])}" + (f" EZG {p['ezg']:.0f} ha" if p["ezg"] > 0 else "")
         p["desc"] = (f"{p['kind']}: {reason}. Volumen {fmt_vol(p['vol'])}, Fläche {p['area']:.1f} ha, "
                      f"Tiefe max. {p['dmax']:.1f} m / Ø {p['dmean']:.1f} m, Seespiegel {p['level']:.0f} m ü. M., "
+                     + (f"Kaltluft-Einzugsgebiet {p['ezg']:.1f} ha (Füllzeit ca. {p['fill_h'] * 60:.0f} min bei "
+                        f"{a.prod:g} m³/m²h), " if p["ezg"] > 0 else "") +
                      f"Abfluss bei {slat:.5f}, {slon:.5f}")
 
     write_outputs(a, pools)
@@ -806,7 +835,7 @@ def main():
 
 
 def write_outputs(a, pools):
-    base = os.path.join(a.out, f"kaltluftseen_{a.name}")
+    base = os.path.join(a.out, f"kaltluftseen_{a.out_name}")
     head = ('<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="kaltluftseen-finder" '
             'xmlns="http://www.topografix.com/GPX/1/1">\n<metadata><name>Kaltluftseen %s</name>'
             '<desc>Datenquelle: swissALTI3D © swisstopo; Vegetationshöhenmodell LiDAR LFI, BAFU/WSL. Modellrechnung, '
@@ -836,18 +865,19 @@ def write_outputs(a, pools):
             f.write("</trk>\n")
         f.write("</gpx>\n")
     keys = ["id", "kind", "vol", "area", "area_open", "dmax", "dmean", "vol_total", "dmax_total", "w0", "wup", "level", "ground", "lat", "lon",
-            "slat", "slon", "veg_spill", "lift"]
+            "slat", "slon", "veg_spill", "lift", "ezg", "fill_h"]
     with open(base + ".csv", "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["id", "typ", "volumen_m3", "flaeche_ha", "flaeche_offen_ha", "tiefe_max_m", "tiefe_mittel_m",
                     "volumen_inkl_fliessend_m3", "tiefe_inkl_fliessend_m", "engstelle_breite_m", "tal_oberhalb_breite_m", "seespiegel_m", "boden_tiefster_punkt_m", "lat", "lon", "abfluss_lat",
-                    "abfluss_lon", "vegetation_abfluss_m", "stau_durch_baeume_m"])
+                    "abfluss_lon", "vegetation_abfluss_m", "stau_durch_baeume_m", "einzugsgebiet_ha", "fuellzeit_h"])
         for p in pools:
             w.writerow([p["id"], p["kind"], round(p["vol"]), round(p["area"], 2), round(p["area_open"], 2),
                         round(p["dmax"], 2), round(p["dmean"], 2), *((round(p["vol_total"]), round(p["dmax_total"], 1), round(p["w0"]), round(p["wup"]))
                           if p["kind"] == "Talverengung" else ("", "", "", "")),
                         round(p["level"], 1), round(p["ground"], 1), f"{p['lat']:.6f}", f"{p['lon']:.6f}",
-                        f"{p['slat']:.6f}", f"{p['slon']:.6f}", round(p["veg_spill"], 1), round(p["lift"], 1)])
+                        f"{p['slat']:.6f}", f"{p['slon']:.6f}", round(p["veg_spill"], 1), round(p["lift"], 1),
+                        round(p["ezg"], 2), round(p["fill_h"], 3)])
     feats = []
     for p in pools:
         if p["geom"] is None:
