@@ -1,0 +1,64 @@
+name: Kaltluftseen
+# Lädt fehlende Eingangsdaten (gecacht im Release "cache-<name>"), sucht Kaltluftseen und legt GPX/GeoJSON/CSV
+# im Release "kaltluftseen-<name>" ab.
+on:
+  push:
+    branches: [main]
+    paths: ["scripts/**", ".github/workflows/kaltluftseen.yml"]
+  workflow_dispatch:
+    inputs:
+      name: {description: "Name des Gebiets", default: "thurgau"}
+      canton: {description: "Kantonsnummer (BFS), 0 = bbox", default: "20"}
+      args: {description: "zusätzliche Parameter für kaltluftseen.py, z.B. --res 4 --min-stau 2", default: ""}
+permissions:
+  contents: write
+env:
+  NAME: ${{ github.event.inputs.name || 'thurgau' }}
+  CANTON: ${{ github.event.inputs.canton || '20' }}
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+concurrency:
+  group: kaltluftseen-${{ github.event.inputs.name || 'thurgau' }}
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pakete
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdal-bin python3-gdal python3-numpy python3-scipy python3-numba
+          python3 -c "import numba, numpy; from osgeo import gdal; print(numba.__version__, numpy.__version__, gdal.__version__)"
+      - name: Cache aus Release holen
+        run: |
+          mkdir -p cache
+          gh release download "cache-$NAME" -D cache -R "$GITHUB_REPOSITORY" || echo "noch kein Cache"
+          ls cache | wc -l; du -sh cache
+      - name: Fehlende Eingangsdaten laden
+        run: python3 scripts/fetch.py --name "$NAME" --canton "$CANTON" --cache cache
+      - name: Cache sichern
+        if: always()
+        run: |
+          T="cache-$NAME"
+          gh release view "$T" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$T" -R "$GITHUB_REPOSITORY" \
+            --latest=false -t "Cache Eingangsdaten $NAME" \
+            -n "Heruntergeladene Eingangsdaten, damit sie nicht jedes Mal neu geladen werden: swissALTI3D © swisstopo (2 m, 10-km-Kacheln), Vegetationshöhenmodell LiDAR LFI (BAFU/WSL), Kantonsgrenze swissBOUNDARIES3D © swisstopo."
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$T" --paginate --jq '.assets[].name' | sort > have.txt
+          (cd cache && ls -1 | grep -v -e '\.part$' -e '^tmp_' | sort) > all.txt
+          comm -23 all.txt have.txt > new.txt
+          echo "$(wc -l < new.txt) neue Dateien für den Cache"
+          (cd cache && xargs -r -n 20 gh release upload "$T" -R "$GITHUB_REPOSITORY" --clobber) < new.txt
+      - name: Kaltluftseen suchen
+        run: |
+          mkdir -p out
+          set -o pipefail
+          /usr/bin/time -v python3 scripts/kaltluftseen.py --name "$NAME" --cache cache --out out ${{ github.event.inputs.args }} 2>&1 | tee out/log_$NAME.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: "kaltluftseen-${{ env.NAME }}", path: out, retention-days: 14}
+      - name: Ergebnis veröffentlichen
+        run: |
+          T="kaltluftseen-$NAME"
+          gh release view "$T" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$T" -R "$GITHUB_REPOSITORY" \
+            -t "Kaltluftseen $NAME" -n "Modellierte Kaltluftseen (Senken, Stau durch Vegetation, Talverengungen). Datenquelle: swissALTI3D © swisstopo; Vegetationshöhenmodell LiDAR LFI, BAFU/WSL. Modellrechnung, nicht gemessen."
+          gh release upload "$T" out/* -R "$GITHUB_REPOSITORY" --clobber
