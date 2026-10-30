@@ -32,6 +32,7 @@ from xml.sax.saxutils import escape
 import numpy as np
 from numba import njit
 from osgeo import gdal, ogr, osr
+from scipy import ndimage
 
 gdal.UseExceptions()
 
@@ -161,9 +162,12 @@ def accumulate(parent, order, cell_area):
 # ---------------------------------------------------------------- virtuelle Dämme an Talquerschnitten ----
 
 @njit(cache=True)
-def _section(E, nr, nc, r0, c0, pr, pc, step, K, lev, out_r, out_c):
-    """Querschnitt bei Wasserspiegel lev: (Fläche in px*m, Breite in px, Anzahl Zellen in out_*, offen).
-    offen: 0 = geschlossen, 1 = breiter als wmax, 2 = Rand oder keine Daten erreicht."""
+def _section(E, P, nr, nc, r0, c0, pr, pc, step, K, lev, out_r, out_c):
+    """Querschnitt bei Wasserspiegel lev über Gelände E: (wirksame Fläche in px*m, Breite in px, Anzahl Zellen in
+    out_*, offen). P = Durchlässigkeit je Zelle (1 offen, kleiner in Wald/Hecke: Bäume bremsen die Kaltluft).
+    offen: 0 = geschlossen, 1 = breiter als wmax oder läuft über einen Rücken ins Nachbartal über,
+    2 = Rand oder keine Daten erreicht."""
+    tol = max(1.0, 0.2 * (lev - E[r0 * nc + c0]))
     area = 0.0
     width = 0.0
     n = 0
@@ -172,6 +176,7 @@ def _section(E, nr, nc, r0, c0, pr, pc, step, K, lev, out_r, out_c):
         return 0.0, 0.0, 0, 0
     # linke Seite (rückwärts), dann Mitte, dann rechte Seite: Zellen in Reihenfolge entlang der Linie
     left = 0
+    mx = -1e30
     for k in range(1, K + 1):
         rr = int(round(r0 - pr * step * k))
         cc = int(round(c0 - pc * step * k))
@@ -182,8 +187,12 @@ def _section(E, nr, nc, r0, c0, pr, pc, step, K, lev, out_r, out_c):
             return 0.0, 0.0, 0, 2
         if e >= lev:
             break
+        if e > mx:
+            mx = e
+        elif e < mx - tol:  # Rücken überschritten: Kaltluft fliesst ins Nachbartal
+            return 0.0, 0.0, 0, 1
         left = k
-        area += (lev - e) * step
+        area += (lev - e) * step * P[rr * nc + cc]
         width += step
         if k == K:
             return 0.0, 0.0, 0, 1
@@ -194,8 +203,9 @@ def _section(E, nr, nc, r0, c0, pr, pc, step, K, lev, out_r, out_c):
     out_r[n] = r0
     out_c[n] = c0
     n += 1
-    area += (lev - z0) * step
+    area += (lev - z0) * step * P[r0 * nc + c0]
     width += step
+    mx = -1e30
     for k in range(1, K + 1):
         rr = int(round(r0 + pr * step * k))
         cc = int(round(c0 + pc * step * k))
@@ -209,7 +219,11 @@ def _section(E, nr, nc, r0, c0, pr, pc, step, K, lev, out_r, out_c):
         n += 1
         if e >= lev:
             break
-        area += (lev - e) * step
+        if e > mx:
+            mx = e
+        elif e < mx - tol:
+            return 0.0, 0.0, 0, 1
+        area += (lev - e) * step * P[rr * nc + cc]
         width += step
         if k == K:
             return 0.0, 0.0, 0, 1
@@ -228,7 +242,7 @@ def main_child(parent, acc):
 
 
 @njit(cache=True)
-def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin, acap, qprod, gred, hmax, wmax, maxwh):
+def build_dams(G, P, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin, acap, qprod, gred, hmax, wmax, maxwh):
     """Setzt virtuelle Dämme in W. Rückgabe Dammtabelle: (zelle, niveau, h, zufluss_m3s, breite_m)."""
     step = 0.5
     K = int(wmax / (res * step))
@@ -252,7 +266,7 @@ def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin
             for r in range(br * block, min((br + 1) * block, nr)):
                 for c in range(bc * block, min((bc + 1) * block, nc)):
                     i = r * nc + c
-                    if acc[i] >= ba and E[i] == E[i]:
+                    if acc[i] >= ba and G[i] == G[i]:
                         ba = acc[i]
                         best = i
             if best < 0:
@@ -275,14 +289,14 @@ def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin
             L = math.sqrt(dr * dr + dc * dc)
             if L < 4:
                 continue
-            z0 = E[best]
+            z0 = G[best]
             Q = min(acc[best], acap) * qprod
             # Querschnitt senkrecht zur Fliessrichtung, dazu ±20° und ±40°: massgebend ist der engste (grösstes h)
             hbest = -1.0
             Qbest = Q
             pbr = 0.0
             pbc = 0.0
-            for ang in (0.0, 0.35, -0.35, 0.7, -0.7):
+            for ang in (0.0, 0.35, -0.35):
                 ca = math.cos(ang)
                 sa = math.sin(ang)
                 fr = (dr * ca - dc * sa) / L
@@ -298,7 +312,7 @@ def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin
                     ok_hi = False
                     for _ in range(26):
                         mid = 0.5 * (lo + hi)
-                        a, w, n, opn = _section(E, nr, nc, r0, c0, pr, pc, step, K, z0 + mid, buf_r, buf_c)
+                        a, w, n, opn = _section(G, P, nr, nc, r0, c0, pr, pc, step, K, z0 + mid, buf_r, buf_c)
                         if opn > 0:
                             hi = mid
                             continue
@@ -310,7 +324,7 @@ def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin
                             lo = mid
                     h = hi if ok_hi else lo
                     # flache Talböden: mehrere parallele Fliesslinien. Massgebend ist die grösste im Querschnitt.
-                    a, w, n, opn = _section(E, nr, nc, r0, c0, pr, pc, step, K, z0 + h, buf_r, buf_c)
+                    a, w, n, opn = _section(G, P, nr, nc, r0, c0, pr, pc, step, K, z0 + h, buf_r, buf_c)
                     qs = Qa
                     for k in range(n):
                         v = min(acc[buf_r[k] * nc + buf_c[k]], acap) * qprod
@@ -328,7 +342,7 @@ def build_dams(E, W, dam_id, parent, child, acc, nstep, nr, nc, res, block, amin
             if h < 0.5:
                 continue
             lev = z0 + h
-            a, w, n, opn = _section(E, nr, nc, r0, c0, pbr, pbc, step, K, lev, buf_r, buf_c)
+            a, w, n, opn = _section(G, P, nr, nc, r0, c0, pbr, pbc, step, K, lev, buf_r, buf_c)
             if opn > 0 or n == 0:
                 continue
             if w * res > maxwh * h:  # kein Tal, sondern flaches/offenes Gelände: kein virtueller Damm
@@ -393,7 +407,7 @@ def pool_stats(lab, F, Z, V, dam_id, d_lev, d_q, qroot, raised, npool, vmin, qfr
 
 
 @njit(cache=True)
-def constriction(lab, raised, dam_id, d_cell, d_q, d_pr, d_pc, root_dam, levels, E, nr, nc, res, wmax, qfrac):
+def constriction(lab, raised, dam_id, d_cell, d_q, d_pr, d_pc, root_dam, levels, G, P, nr, nc, res, wmax, qfrac):
     """Je See: Breite der Engstelle (Abflussquerschnitt) und grösste Breite der überstauten Querschnitte weiter
     oben im selben Tal, beide auf Höhe des Seespiegels. Offener Querschnitt = wmax*2."""
     npool = root_dam.size
@@ -415,14 +429,14 @@ def constriction(lab, raised, dam_id, d_cell, d_q, d_pr, d_pc, root_dam, levels,
         if root_dam[p] > 0:
             d = root_dam[p] - 1
             r0 = d_cell[d] // nc
-            a, w, n, opn = _section(E, nr, nc, r0, d_cell[d] - r0 * nc, d_pr[d], d_pc[d], step, K, levels[p], br, bc)
+            a, w, n, opn = _section(G, P, nr, nc, r0, d_cell[d] - r0 * nc, d_pr[d], d_pc[d], step, K, levels[p], br, bc)
             w0[p] = 2 * wmax if opn > 0 else w * res
     for d in range(nd):
         p = dam_pool[d]
         if p < 0:
             continue
         r0 = d_cell[d] // nc
-        a, w, n, opn = _section(E, nr, nc, r0, d_cell[d] - r0 * nc, d_pr[d], d_pc[d], step, K, levels[p], br, bc)
+        a, w, n, opn = _section(G, P, nr, nc, r0, d_cell[d] - r0 * nc, d_pr[d], d_pc[d], step, K, levels[p], br, bc)
         if opn == 2:  # Rand/keine Daten: Breite unbekannt
             continue
         ww = 2 * wmax if opn == 1 else w * res
@@ -466,6 +480,7 @@ def stau_excess(lab, raised, dam_id, dam_pool, d_lev, F, Z, nr, nc, npool, xmin)
     xmax = np.zeros(npool, np.float32)
     ximax = np.full(npool, -1, np.int64)
     xcnt = np.zeros(npool, np.int64)
+    xmask = np.zeros(N, np.bool_)
     for i in range(N):
         p = lab[i]
         if p < 0 or not raised[i] or not (Lp[i] == Lp[i]):
@@ -480,7 +495,8 @@ def stau_excess(lab, raised, dam_id, dam_pool, d_lev, F, Z, nr, nc, npool, xmin)
             ximax[p] = i
         if ex >= xmin:
             xcnt[p] += 1
-    return xvol, xmax, ximax, xcnt
+            xmask[i] = True
+    return xvol, xmax, ximax, xcnt, xmask
 
 
 @njit(cache=True)
@@ -578,11 +594,14 @@ def main():
     ap.add_argument("--veg-k", type=float, default=0.4, help="wirksamer Anteil der Vegetationshöhe als Damm")
     ap.add_argument("--veg-min", type=float, default=3, help="Vegetation ab dieser Höhe (m) staut")
     ap.add_argument("--veg-max", type=float, default=6, help="höchste wirksame Dammhöhe durch Vegetation (m)")
+    ap.add_argument("--veg-por", type=float, default=0.3,
+                    help="Talverengung: Durchlässigkeit von Wald/Hecke im Querschnitt (1 = wie offenes Gelände)")
     # Talverengung
     ap.add_argument("--dam-spacing", type=float, default=50, help="Abstand der Querschnitte (m)")
     ap.add_argument("--amin", type=float, default=0.1, help="Querschnitte ab Einzugsgebiet (km²)")
     ap.add_argument("--acap", type=float, default=10, help="Einzugsgebiet höchstens (km²) für die Kaltluftmenge")
-    ap.add_argument("--prod", type=float, default=12, help="Kaltluftproduktion (m³ je m² und Stunde)")
+    ap.add_argument("--prod", type=float, default=3,
+                    help="wirksame Kaltluftproduktion (m³ je m² und Stunde); 3 passt zum Kaltluftsee bei Geboltshausen")
     ap.add_argument("--dT", type=float, default=3, help="Temperaturdefizit der Kaltluft (K)")
     ap.add_argument("--hmax", type=float, default=40, help="grösste Kaltluftmächtigkeit (m)")
     ap.add_argument("--wmax", type=float, default=1000, help="halbe Querschnittsbreite höchstens (m)")
@@ -673,7 +692,8 @@ def main():
         W = E.copy()
         gred = 9.81 * a.dT / 283.0
         child = main_child(parentZ, acc)
-        damtab = build_dams(E, W, dam_id, parentZ, child, acc, max(int(round(60 / r)), 4), nr, nc, r, max(int(round(a.dam_spacing / r)), 1),
+        P = np.where(V >= a.veg_min, np.float32(a.veg_por), np.float32(1)).astype(np.float32)
+        damtab = build_dams(Z, P, W, dam_id, parentZ, child, acc, max(int(round(60 / r)), 4), nr, nc, r, max(int(round(a.dam_spacing / r)), 1),
                             a.amin * 1e6, a.acap * 1e6, a.prod / 3600.0, gred, a.hmax, a.wmax, a.max_wh)
         del parentZ
         log(f"  {damtab[0].size} Querschnitte, Mächtigkeit Median {np.median(damtab[2]) if damtab[2].size else 0:.1f} m")
@@ -685,8 +705,13 @@ def main():
         st2 = pool_stats(lab2, F2, Z, V, dam_id, damtab[1], damtab[3], qroot, raised2, roots2.size, a.veg_min,
                          a.qfrac)
         w0, wup, dam_pool = constriction(lab2, raised2, dam_id, damtab[0], damtab[3], damtab[5], damtab[6],
-                                         rd.astype(np.int64), F2[roots2], E, nr, nc, r, a.wmax, a.qfrac)
-        xst = stau_excess(lab2, raised2, dam_id, dam_pool, damtab[1], F2, Z, nr, nc, roots2.size, 0.5)
+                                         rd.astype(np.int64), F2[roots2], Z, P, nr, nc, r, a.wmax, a.qfrac)
+        xst = list(stau_excess(lab2, raised2, dam_id, dam_pool, damtab[1], F2, Z, nr, nc, roots2.size, 0.5))
+        # schmale Streifen (z.B. entlang virtueller Dämme) zählen nicht: Öffnung mit 3x3
+        xm = ndimage.binary_opening(xst[4].reshape(nr, nc), structure=np.ones((3, 3), bool)).ravel()
+        xst[4] = xm
+        xst[3] = np.bincount(lab2[xm], minlength=roots2.size)
+        del xm
         mstau = mainstem_stau(rd, F2[roots2], damtab[0], damtab[1], dam_id, child, Z, int(a.stem_km * 1000 / r))
         del child
         log(f"  {roots2.size} gefüllte Bereiche")
@@ -741,7 +766,8 @@ def main():
     # Umrisse
     simp = r * 0.75
     outl = {}
-    for which, lab in ((1, lab1), (2, lab2 if damtab is not None else None)):
+    # Talverengung: Umriss nur, wo Rückstau >= 0,5 m (ohne die fliessende Schicht)
+    for which, lab in ((1, lab1), (2, np.where(xst[4], lab2, -1) if damtab is not None else None)):
         if lab is None:
             continue
         ids = [p["lab"] for p in pools if p["which"] == which]
