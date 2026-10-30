@@ -2,7 +2,7 @@ name: ECOSTRESS Nachtaufnahmen suchen
 on:
   push:
     branches: [main]
-    paths: ["scripts/ecostress_search.py", ".github/workflows/ecostress.yml"]
+    paths: ["scripts/ecostress_*.py", ".github/workflows/ecostress.yml"]
   workflow_dispatch:
     inputs:
       point: {description: "lon,lat", default: "9.1,47.6"}
@@ -17,12 +17,16 @@ jobs:
         run: |
           mkdir -p out
           python3 scripts/ecostress_search.py --point "${{ github.event.inputs.point || '9.1,47.6' }}" 2>&1 | tee out/ecostress_log.txt
+      - name: Vorschaubilder
+        run: |
+          python3 -c "import PIL" 2>/dev/null || sudo apt-get install -y -qq python3-pil
+          python3 scripts/ecostress_browse.py out/ecostress_nacht.csv out/vorschau 2>&1 | tee out/vorschau_log.txt
       - name: Ergebnis in Branch logs-ecostress
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p /tmp/l && cp out/* /tmp/l/ 2>/dev/null || true
+          mkdir -p /tmp/l && cp -r out/* /tmp/l/ 2>/dev/null || true
           cd /tmp/l && git init -q && git checkout -q -b logs-ecostress && git add -A
           git -c user.name=ci -c user.email=ci@localhost commit -q -m "Lauf ${{ github.run_id }}" || exit 0
           git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" logs-ecostress
