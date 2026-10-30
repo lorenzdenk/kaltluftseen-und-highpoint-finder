@@ -121,7 +121,7 @@ def main():
         if local < 7:  # Morgen: Schnee vom selben Tag; Abend: auch selber Tag
             pass
         sn = {k: s.get(day) for k, s in snow.items()}
-        rows.append([day, t[11:19], f"{local:02d}:{t[14:16]}", re.search(r"_(\d{2}T\w{3})_", name).group(1), cloud,
+        rows.append([day, t[11:19], f"{local:02d}:{t[14:16]}", (re.search(r"_(\d{2}[A-Z]{3})_", name) or re.search("", "")).group(0).strip("_"), cloud,
                      max([v for v in sn.values() if v is not None], default=""),
                      " ".join(f"{k}={v:g}" for k, v in sn.items() if v is not None), name, url])
     rows.sort()
