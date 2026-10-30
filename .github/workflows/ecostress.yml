@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       point: {description: "lon,lat", default: "9.1,47.6"}
+      box: {description: "Ausschnitt UTM 32N E0,N0,E1,N1 (leer = Thurgau)", default: ""}
 permissions:
   contents: write
 jobs:
@@ -20,8 +21,13 @@ jobs:
       - name: Vorschaubilder
         run: |
           sudo apt-get install -y -qq python3-pil python3-numpy >/dev/null
-          python3 scripts/ecostress_browse.py out/ecostress_nacht.csv out/vorschau 2>&1 | tee out/vorschau_log.txt
-          python3 scripts/ecostress_browse.py out/ecostress_nacht.csv out/vorschau_alle --min-stationen 0 --top 25 > out/vorschau_alle_log.txt 2>&1
+          B="${{ github.event.inputs.box }}"
+          if [ -n "$B" ]; then
+            python3 scripts/ecostress_browse.py out/ecostress_nacht.csv out/vorschau_alle --min-stationen 0 --top 40 --box "$B" 2>&1 | tee out/vorschau_alle_log.txt
+          else
+            python3 scripts/ecostress_browse.py out/ecostress_nacht.csv out/vorschau 2>&1 | tee out/vorschau_log.txt
+            python3 scripts/ecostress_browse.py out/ecostress_nacht.csv out/vorschau_alle --min-stationen 0 --top 25 > out/vorschau_alle_log.txt 2>&1
+          fi
       - name: Ergebnis in Branch logs-ecostress
         if: always()
         env:

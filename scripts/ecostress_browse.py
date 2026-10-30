@@ -29,6 +29,7 @@ def fetch(url):
 
 
 def crop(img, tile):
+    global BX0, BX1, BY0, BY1
     """Ausschnitt BX/BY aus einer Kachel als Array im Zielraster (NaN ausserhalb)."""
     W = int((BX1 - BX0) / RES)
     H = int((BY1 - BY0) / RES)
@@ -53,8 +54,12 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--min-stationen", type=int, default=3)
     ap.add_argument("--min-schnee", type=float, default=1)
+    ap.add_argument("--box", help="Ausschnitt in UTM 32N: E0,N0,E1,N1 (Standard Thurgau)")
     ap.add_argument("--top", type=int, default=20, help="Vorschaubilder nur für die N klarsten Aufnahmen")
     a = ap.parse_args()
+    global BX0, BX1, BY0, BY1
+    if a.box:
+        BX0, BY0, BX1, BY1 = map(float, a.box.split(","))
     os.makedirs(a.out, exist_ok=True)
     rows = list(csv.DictReader(open(a.csv)))
     groups = {}
