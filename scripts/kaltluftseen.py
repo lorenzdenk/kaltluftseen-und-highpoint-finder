@@ -852,7 +852,7 @@ def write_outputs(a, pools):
     for p in pools:
         if p["geom"] is None:
             continue
-        props = {k: (round(p[k], 2) if isinstance(p[k], float) else p[k]) for k in keys}
+        props = {k: (round(p[k], 6 if k in ("lat", "lon", "slat", "slon") else 2) if isinstance(p[k], float) else p[k]) for k in keys}
         props.update(name=p["name"], beschreibung=p["desc"])
         feats.append({"type": "Feature", "properties": props, "geometry": json.loads(p["geom"].ExportToJson())})
     with open(base + ".geojson", "w") as f:
