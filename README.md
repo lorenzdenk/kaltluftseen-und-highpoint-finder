@@ -11,7 +11,7 @@ sie als **GPX** aus (dazu GeoJSON und CSV). Standardgebiet: Kanton Thurgau.
 | **Vegetation** | Wald, Waldrand oder Hecke staut den Abfluss | Vegetation als teildurchlässiger Damm: Gelände + min(0,4 × Vegetationshöhe, 6 m), ab 3 m Vegetationshöhe |
 | **Talverengung** | Kaltluft fliesst ab, aber eine Engstelle lässt nicht alles durch | siehe unten |
 
-**Talverengung:** Alle ~50 m entlang der Tiefenlinien (ab 0,1 km² Einzugsgebiet) wird ein Querschnitt quer zum Tal
+**Talverengung:** Alle ~20 m entlang der Tiefenlinien (ab 0,1 km² Einzugsgebiet) wird ein Querschnitt quer zum Tal
 gelegt. Gesucht ist die Kaltluftmächtigkeit *h*, bei der der kritische Abfluss Q = √(g′·A³/B) gleich der im
 Einzugsgebiet erzeugten Kaltluft ist (wirksam 3 m³ je m² und Stunde, Einzugsgebiet höchstens 10 km², g′ aus 3 K
 Temperaturdefizit, *h* höchstens 40 m). Wald und Hecken im Querschnitt lassen nur 30 % durch (`--veg-por`). Jeder

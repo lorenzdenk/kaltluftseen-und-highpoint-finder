@@ -597,7 +597,7 @@ def main():
     ap.add_argument("--veg-por", type=float, default=0.3,
                     help="Talverengung: Durchlässigkeit von Wald/Hecke im Querschnitt (1 = wie offenes Gelände)")
     # Talverengung
-    ap.add_argument("--dam-spacing", type=float, default=50, help="Abstand der Querschnitte (m)")
+    ap.add_argument("--dam-spacing", type=float, default=20, help="Abstand der Querschnitte (m)")
     ap.add_argument("--amin", type=float, default=0.1, help="Querschnitte ab Einzugsgebiet (km²)")
     ap.add_argument("--acap", type=float, default=10, help="Einzugsgebiet höchstens (km²) für die Kaltluftmenge")
     ap.add_argument("--prod", type=float, default=3,
