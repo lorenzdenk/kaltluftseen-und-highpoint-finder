@@ -7,6 +7,8 @@ Ecke in km, LV95):
   dtm2_<E>_<N>.tif          swissALTI3D 2 m, Float32, NoData -9999
   veg_<...>.tif             Vegetationshöhe (Byte, Wert = Höhe * 2, 255 = keine Daten)
   lc_<E>_<N>.tif            Landbedeckung ESA WorldCover 10 m (Byte, Klassen 10..100, 0 = keine Daten)
+  strassen_<E>_<N>.tif      Strassen swissTLM3D aus dem WMS, 5 m (Byte: 1 Nebenstrasse, 2 Hauptstrasse, 3 Autobahn)
+  orte_<E0>_<N0>_<E1>_<N1>.csv   Ortsnamen swissNAMES3D im Bereich der Kacheln (name;e;n;einwohner)
 
 Vegetationshöhe: zuerst aus dem Release "ch-vhm-<name>" des Repos render-baumhoehen-overlay (1 m, schon aufbereitet),
 sonst direkt aus dem Vegetationshöhenmodell LiDAR LFI (BAFU/WSL), je Pixel neuester Jahrgang, 2 m.
@@ -21,6 +23,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -40,6 +43,12 @@ BOUNDARY = ("https://api3.geo.admin.ch/rest/services/api/MapServer/ch.swisstopo.
 VHM_RELEASE = "https://github.com/lorenzdenk/render-baumhoehen-overlay/releases/download/ch-vhm-{name}/"
 VHM_COG = ("https://data.geo.admin.ch/ch.bafu.landesforstinventar-vegetationshoehenmodell_lidar/"
            "landesforstinventar-vegetationshoehenmodell_lidar_{y}/landesforstinventar-vegetationshoehenmodell_lidar_{y}_2056.tif")
+NAMEN_STAC = "https://data.geo.admin.ch/api/stac/v0.9/collections/ch.swisstopo.swissnames3d/items?limit=100"
+WMS_STRASSEN = ("https://wms.geo.admin.ch/?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=ch.swisstopo.swisstlm3d-strassen"
+                "&CRS=EPSG:2056&BBOX={x0},{y0},{x1},{y1}&WIDTH={n}&HEIGHT={n}&FORMAT=image/png&TRANSPARENT=true&STYLES=")
+# Einwohnerkategorien von swissNAMES3D -> Grössenklasse 0 (Weiler) .. 5 (Stadt)
+EINWOHNER = {"< 20": 0, "20 bis 49": 0, "50 bis 99": 1, "100 bis 999": 2, "1'000 bis 1'999": 3,
+             "2'000 bis 9'999": 4, "10'000 bis 49'999": 5, "50'000 bis 100'000": 5, "> 100'000": 5}
 WORLDCOVER = ("https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map/"
               "ESA_WorldCover_10m_2021_v200_{lat}{lon}_Map.tif")
 TILE = 10000
@@ -329,8 +338,83 @@ def landbedeckung(cache, tiles):
     return fehlt
 
 
+# ---------------------------------------------------------------- Orientierung für die Karten ----
+
+def strassen(cache, tiles):
+    """Strassen als Raster aus dem WMS von swisstopo (nur für die Übersichtskarten). Fehlschlag ist nicht fatal."""
+    n = TILE // 5
+    for x, y in tiles:
+        out = os.path.join(cache, f"strassen_{x // 1000}_{y // 1000}.tif")
+        if os.path.exists(out):
+            continue
+        try:
+            png = http_get(WMS_STRASSEN.format(x0=x, y0=y, x1=x + TILE, y1=y + TILE, n=n))
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")  # PNG ohne Georeferenz ist hier richtig
+                with rasterio.MemoryFile(png) as mem, mem.open() as src:
+                    a = src.read().astype(np.int16)
+            if a.shape != (4, n, n):
+                raise RuntimeError(f"unerwartetes Bild {a.shape}")
+            r, g, b, alpha = a
+            bunt = (np.maximum(np.maximum(r, g), b) - np.minimum(np.minimum(r, g), b)) > 40
+            kl = np.where(alpha < 128, 0, np.where(~bunt, 1, np.where((g - b > 60) & (g < 220), 3, 2))).astype(np.uint8)
+        except Exception as e:
+            log(f"  Strassen {x // 1000}/{y // 1000} nicht verfügbar: {e}")
+            continue
+        with rasterio.open(out + ".part", "w", height=n, width=n, dtype="uint8", nodata=0,
+                           transform=from_origin(x, y + TILE, 5, 5), **GTIFF) as dst:
+            dst.write(kl, 1)
+        os.replace(out + ".part", out)
+    log("Strassen im Cache")
+
+
+def orte(cache, tiles):
+    """Ortsnamen (swissNAMES3D, Objektart Ort) im Bereich der Kacheln. Fehlschlag ist nicht fatal."""
+    x0, y0 = min(t[0] for t in tiles), min(t[1] for t in tiles)
+    x1, y1 = max(t[0] for t in tiles) + TILE, max(t[1] for t in tiles) + TILE
+    out = os.path.join(cache, f"orte_{x0 // 1000}_{y0 // 1000}_{x1 // 1000}_{y1 // 1000}.csv")
+    if os.path.exists(out):
+        return
+    import io
+    import zipfile
+    try:
+        feats = json.loads(http_get(NAMEN_STAC))["features"]
+        href = next(a["href"] for a in sorted(feats, key=lambda f: f["id"])[-1]["assets"].values()
+                    if a["href"].endswith("csv.zip"))
+        zf = zipfile.ZipFile(io.BytesIO(http_get(href)))
+        pkt = next(n for n in zf.namelist() if n.endswith("PKT.csv"))
+        rows = {}
+        with zf.open(pkt) as fh:
+            for r in csv.DictReader(io.TextIOWrapper(fh, encoding="utf-8-sig"), delimiter=";"):
+                if r["OBJEKTART"] != "Ort":
+                    continue
+                e, n = float(r["E"]), float(r["N"])
+                if x0 <= e < x1 and y0 <= n < y1:
+                    rows[(r["NAME"], round(e), round(n))] = EINWOHNER.get(r["EINWOHNERKATEGORIE"], 0)
+    except Exception as e:
+        log(f"Ortsnamen nicht verfügbar: {e}")
+        return
+    with open(out + ".part", "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f, delimiter=";")
+        w.writerow(["name", "e", "n", "klasse"])
+        w.writerows([k[0], k[1], k[2], v] for k, v in sorted(rows.items(), key=lambda kv: -kv[1]))
+    os.replace(out + ".part", out)
+    log(f"Ortsnamen: {len(rows)} im Cache")
+
+
+def lies_orte(cache):
+    """Alle Ortsnamen im Cache: Liste (name, e, n, klasse), grösste zuerst, ohne Doppelte."""
+    import glob
+    rows = {}
+    for p in glob.glob(os.path.join(cache, "orte_*.csv")):
+        with open(p, encoding="utf-8") as f:
+            for r in csv.DictReader(f, delimiter=";"):
+                rows[(r["name"], float(r["e"]), float(r["n"]))] = int(r["klasse"])
+    return [(k[0], k[1], k[2], v) for k, v in sorted(rows.items(), key=lambda kv: (-kv[1], kv[0][0]))]
+
+
 def lade(name, cache="cache", canton=20, bbox="8.65,47.36,9.52,47.71", rand_km=2.0, threads=8, veg=True,
-         lc=True, fenster=None):
+         lc=True, fenster=None, karte=True):
     """Lädt alle fehlenden Eingangsdaten. fenster = (x0, y0, x1, y1) in LV95 beschränkt auf einen Ausschnitt.
     Rückgabe: Anzahl unvollständiger Höhenmodell-Kacheln."""
     os.makedirs(cache, exist_ok=True)
@@ -362,5 +446,8 @@ def lade(name, cache="cache", canton=20, bbox="8.65,47.36,9.52,47.71", rand_km=2
         veg_aus_cog(cache, tiles)
     if lc and landbedeckung(cache, tiles):
         log("Landbedeckung unvollständig: das Modell rechnet dort ohne Siedlung und Wasser")
+    if karte:
+        strassen(cache, tiles)
+        orte(cache, tiles)
     log("Höhenmodell vollständig im Cache" if not fehler else f"{fehler} Höhenmodell-Kacheln unvollständig")
     return fehler

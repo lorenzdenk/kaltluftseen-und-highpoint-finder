@@ -29,6 +29,7 @@ def parser():
     d.add_argument("--threads", type=int, default=8)
     d.add_argument("--ohne-vegetation", action="store_true")
     d.add_argument("--ohne-landbedeckung", action="store_true")
+    d.add_argument("--ohne-karte", action="store_true", help="keine Strassen und Ortsnamen für die Übersichtskarten")
 
     r.add_argument("--out", default="out")
     r.add_argument("--out-name", help="Name der Ausgabedateien (Standard: --name)")
@@ -146,6 +147,11 @@ def rechne(a):
         bz = sim["bilanz"]
         log(f"  erzeugt {bz['erzeugt_m3'] / 1e9:.2f} km³ Kaltluft, davon noch {bz['vorhanden_m3'] / 1e9:.2f} km³ im Gebiet")
         ausgabe.schreibe_raster(a.out, name, grob, sim)
+        # Orientierung für die Karten: Strassen (10-m-Raster) und Ortsnamen, soweit im Cache
+        sf = sorted(glob.glob(os.path.join(a.cache, "strassen_*.tif")))
+        gk = Gitter((grob.x0, grob.y0, grob.x1, grob.y1), min(10.0, a.res_fluss))
+        strassen = np.nan_to_num(lies_mosaik(sf, gk, "max", nodata=0)).astype(np.uint8) if sf else None
+        orte = [o for o in daten.lies_orte(a.cache) if grob.x0 < o[1] < grob.x1 and grob.y0 < o[2] < grob.y1]
         for st, zu in sim["zustand"].items():
             objs, lab = seen.finde_stauseen(zu, zc, a.res_fluss, a.see_schicht, a.see_tempo, a.see_flaeche,
                                             wasser if lcf else None)
@@ -162,7 +168,8 @@ def rechne(a):
             maske = np.isin(lab, [o["lab"] for o in objs])
             ausgabe.schreibe_karte(os.path.join(a.out, f"kaltluft_{name}_{st:g}h.png"), grob, zc, zu, maske,
                                    [(s["X"], s["Y"]) for s in sen],
-                                   f"Kaltluft {name} nach {st:g} h: Schichtdicke, Fliessrichtung, Kaltluftseen")
+                                   f"Kaltluft {name} nach {st:g} h: Schichtdicke, Fliessrichtung, Kaltluftseen",
+                                   strassen, orte)
         # Strömung am Ort jeder Senke und jedes Stausees
         zu = sim["zustand"][haupt]
         for o in sen + stau_alle:
@@ -221,6 +228,6 @@ def main(argv=None):
     a = parser().parse_args(argv)
     if a.befehl == "daten":
         fehler = daten.lade(a.name, a.cache, a.canton, a.bbox, a.rand_km, a.threads, not a.ohne_vegetation,
-                            not a.ohne_landbedeckung, _fenster(a))
+                            not a.ohne_landbedeckung, _fenster(a), not a.ohne_karte)
         raise SystemExit(1 if fehler else 0)
     rechne(a)

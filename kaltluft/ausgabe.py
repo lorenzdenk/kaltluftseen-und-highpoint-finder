@@ -109,8 +109,32 @@ def schattierung(z, res):
     return np.clip(np.sin(alt) * np.cos(slope) + np.cos(alt) * np.sin(slope) * np.cos(az - np.pi / 2 - aspect), 0, 1)
 
 
-def schreibe_karte(pfad, gitter, z, zu, stau_maske, senken_xy, titel):
-    """Übersichtskarte: Relief, Schichtdicke (ein Farbton, hell -> dunkel), Fliessrichtung, Umriss der Kaltluftseen."""
+def _beschrifte(ax, orte, ext, breite_zoll):
+    """Ortsnamen setzen, grosse Orte zuerst; ein Name entfällt, wenn er einen schon gesetzten überdecken würde."""
+    import matplotlib.patheffects as pe
+    m_je_pt = (ext[1] - ext[0]) / (breite_zoll * 72.0)
+    groesse = {0: 4.6, 1: 5.2, 2: 6.0, 3: 7.0, 4: 8.0, 5: 9.5}
+    gesetzt = []
+    rand = [pe.withStroke(linewidth=1.6, foreground="white", alpha=0.85)]
+    for name, e, n, kl in orte:
+        fs = groesse.get(kl, 5)
+        w = 0.58 * fs * len(name) * m_je_pt
+        h = 1.25 * fs * m_je_pt
+        x0, y0 = e - w / 2, n + 0.25 * h
+        if x0 < ext[0] or x0 + w > ext[1] or y0 < ext[2] or y0 + h > ext[3]:
+            continue
+        if any(x0 < b[2] and x0 + w > b[0] and y0 < b[3] and y0 + h > b[1] for b in gesetzt):
+            continue
+        gesetzt.append((x0, y0, x0 + w, y0 + h))
+        ax.plot([e], [n], "s", ms=1.6 + 0.4 * kl, color="#1b1b1b", mew=0, zorder=6)
+        ax.text(e, y0, name, fontsize=fs, ha="center", va="bottom", color="#111111", zorder=7,
+                fontweight="bold" if kl >= 4 else "normal", path_effects=rand)
+    return len(gesetzt)
+
+
+def schreibe_karte(pfad, gitter, z, zu, stau_maske, senken_xy, titel, strassen=None, orte=None):
+    """Übersichtskarte: Relief, Schichtdicke (ein Farbton, hell -> dunkel), Fliessrichtung, Umriss der Kaltluftseen,
+    dazu Haupt- und Nebenstrassen (Raster mit Klassen 1..3) und Ortsnamen zur Orientierung."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -120,15 +144,22 @@ def schreibe_karte(pfad, gitter, z, zu, stau_maske, senken_xy, titel):
         return False
     nr, nc = z.shape
     ext = (gitter.x0, gitter.x1, gitter.y0, gitter.y1)
-    b = 12.0
-    fig, ax = plt.subplots(figsize=(b, max(b * nr / nc, 3) + 1.0), dpi=150)
+    b = 18.0
+    fig, ax = plt.subplots(figsize=(b, max(b * nr / nc, 3) + 1.0), dpi=200)
     ax.imshow(schattierung(z, gitter.res), cmap="gray", vmin=-0.2, vmax=1.1, extent=ext, interpolation="bilinear")
     h = zu["h"]
     blau = LinearSegmentedColormap.from_list("schicht", ["#dbe9f6", "#6aaed6", "#2171b5", "#08306b"])
     hm = float(np.nanpercentile(h, 99)) if np.isfinite(h).any() else 1.0
     im = ax.imshow(np.ma.masked_where(~(h >= 1.0), h), cmap=blau, vmin=0, vmax=max(hm, 5), alpha=0.72, extent=ext,
                    interpolation="nearest")
-    k = max(int(round(max(nr, nc) / 70)), 1)
+    if strassen is not None and strassen.any():
+        rgba = np.zeros(strassen.shape + (4,), np.float32)
+        rgba[strassen == 1] = (0.35, 0.33, 0.30, 0.30)   # Nebenstrassen: zurückhaltend
+        rgba[strassen == 2] = (0.45, 0.20, 0.05, 0.85)   # Hauptstrassen
+        rgba[strassen == 3] = (0.60, 0.25, 0.00, 1.00)   # Autobahn
+        ax.imshow(rgba, extent=ext, interpolation="bilinear", zorder=3)
+        ax.plot([], [], color=(0.45, 0.20, 0.05), lw=1.6, label="Haupt- und Nebenstrassen (swissTLM3D)")
+    k = max(int(round(max(nr, nc) / 90)), 1)
     r0 = k // 2
     qx = zu["qx"][r0::k, r0::k]
     qy = zu["qy"][r0::k, r0::k]
@@ -140,19 +171,21 @@ def schreibe_karte(pfad, gitter, z, zu, stau_maske, senken_xy, titel):
         X, Y = np.meshgrid(xs, ys)
         lg = np.sqrt(s[ok] / np.nanpercentile(s[ok], 95)).clip(0.15, 1.3)
         ax.quiver(X[ok], Y[ok], qx[ok] / s[ok] * lg, -qy[ok] / s[ok] * lg, color="#1b1b1b", scale=1.0 / (k * gitter.res),
-                  scale_units="xy", width=0.0012, headwidth=4, alpha=0.8)
+                  scale_units="xy", width=0.0009, headwidth=4, alpha=0.75, zorder=4)
     if stau_maske is not None and stau_maske.any():
         ax.contour(np.linspace(ext[0], ext[1], nc), np.linspace(ext[3], ext[2], nr), stau_maske.astype(float),
-                   levels=[0.5], colors="#b3261e", linewidths=1.1)
-        ax.plot([], [], color="#b3261e", lw=1.1, label="Kaltluftsee (Stau): dick und kaum Bewegung")
+                   levels=[0.5], colors="#d4145a", linewidths=1.3, zorder=5)
+        ax.plot([], [], color="#d4145a", lw=1.3, label="Kaltluftsee (Stau): dick und kaum Bewegung")
     if senken_xy:
-        ax.plot([p[0] for p in senken_xy], [p[1] for p in senken_xy], "o", ms=3.5, mfc="white", mec="#1b1b1b",
-                mew=0.8, ls="", label="Senke im Gelände")
+        ax.plot([p[0] for p in senken_xy], [p[1] for p in senken_xy], "o", ms=3.0, mfc="#ffd400", mec="#1b1b1b",
+                mew=0.6, ls="", label="Senke im Gelände", zorder=5)
     ax.plot([], [], color="#1b1b1b", marker=">", ls="-", lw=0.8, ms=4, label="Fliessrichtung (Länge ~ Volumenstrom)")
-    ax.legend(loc="lower left", fontsize=8, framealpha=0.9)
+    if orte:
+        _beschrifte(ax, orte, ext, b * 0.9)
+    ax.legend(loc="lower left", fontsize=8, framealpha=0.92).set_zorder(10)
     ax.set_xlim(ext[0], ext[1])
     ax.set_ylim(ext[2], ext[3])
-    ax.set_title(titel, fontsize=11, loc="left")
+    ax.set_title(titel, fontsize=12, loc="left")
     ax.set_xlabel("LV95 Ost (m)", fontsize=8)
     ax.set_ylabel("LV95 Nord (m)", fontsize=8)
     ax.tick_params(labelsize=7)

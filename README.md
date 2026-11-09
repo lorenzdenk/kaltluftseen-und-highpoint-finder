@@ -71,7 +71,7 @@ Dateien in `out/`, auf GitHub im Release `kaltluftseen-<name>`:
 | `kaltluftseen_<name>.geojson`, `.csv` | alle Objekte mit allen Kennzahlen, Kaltluftseen aller Zeitpunkte (`nach_h`) |
 | `kaltluft_<name>_<N>h.tif` | 4 Bänder: Schichtdicke (m), Fliessgeschwindigkeit (m/s), Volumenstrom (m²/s), Fliessrichtung (°) |
 | `kaltluft_<name>_beginn.tif` | Stunden, bis die Schicht 5 m dick ist |
-| `kaltluft_<name>_<N>h.png` | Übersichtskarte |
+| `kaltluft_<name>_<N>h.png` | Übersichtskarte mit Schichtdicke, Fliessrichtung, Kaltluftseen, Senken, Strassen und Ortsnamen |
 | `parameter_<name>.json` | verwendete Einstellungen |
 
 Senken heissen `KLS <Rang> <Volumen>`, Kaltluftseen aus dem Strömungsmodell `Stau <Rang> <Fläche> <Dicke>`.
@@ -119,3 +119,4 @@ scripts/ecostress_*.py ECOSTRESS-Nachtaufnahmen (Oberflächentemperatur) zum Ver
   data.geo.admin.ch.
 - ESA WorldCover 10 m 2021 v200 (CC BY 4.0)
 - Kantonsgrenze: swissBOUNDARIES3D © swisstopo
+- Für die Karten: Strassen swissTLM3D (WMS) und Ortsnamen swissNAMES3D © swisstopo
