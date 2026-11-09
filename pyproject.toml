@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kaltluft"
+version = "2.0.0"
+description = "Kaltluftseen-Finder: Senkenanalyse und Kaltluftabfluss-Modell auf swissALTI3D"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "numba", "rasterio>=1.4", "pyproj", "shapely>=2", "matplotlib"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+ecostress = ["pillow"]
+
+[project.scripts]
+kaltluft = "kaltluft.cli:main"
+
+[tool.setuptools]
+packages = ["kaltluft"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

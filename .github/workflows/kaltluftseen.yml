@@ -1,16 +1,18 @@
 name: Kaltluftseen
-# Lädt fehlende Eingangsdaten (gecacht im Release "cache-<name>"), sucht Kaltluftseen und legt GPX/GeoJSON/CSV
-# im Release "kaltluftseen-<name>" ab.
+# Lädt fehlende Eingangsdaten (gecacht im Release "cache-<name>"), rechnet Senken und Kaltluftabfluss und legt
+# GPX/GeoJSON/CSV/GeoTIFF/PNG im Release "kaltluftseen-<name>" ab.
 on:
   push:
     branches: [main]
-    paths: ["scripts/**", ".github/workflows/kaltluftseen.yml"]
+    paths: ["kaltluft/**", "pyproject.toml", ".github/workflows/kaltluftseen.yml"]
+  pull_request:
+    paths: ["kaltluft/**", "tests/**", "pyproject.toml", ".github/workflows/kaltluftseen.yml"]
   workflow_dispatch:
     inputs:
       name: {description: "Name des Gebiets", default: "thurgau"}
       canton: {description: "Kantonsnummer (BFS), 0 = bbox", default: "20"}
       bbox: {description: "W,S,E,N in Grad (nur wenn Kanton 0)", default: "8.65,47.36,9.52,47.71"}
-      args: {description: "zusätzliche Parameter für kaltluftseen.py, z.B. --res 4 --min-stau 2", default: ""}
+      args: {description: "zusätzliche Parameter für `kaltluft rechnen`, z.B. --res-fluss 10 --stunden 1,2,4,8", default: ""}
 permissions:
   contents: write
 env:
@@ -18,19 +20,26 @@ env:
   CANTON: ${{ github.event.inputs.canton || '20' }}
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 concurrency:
-  group: kaltluftseen-${{ github.event.inputs.name || 'thurgau' }}
+  group: kaltluftseen-${{ github.event.inputs.name || 'thurgau' }}-${{ github.event_name }}
 jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -q -e .[test]
+      - run: pytest -q
   run:
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
-      - name: Pakete
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq gdal-bin python3-gdal python3-numpy python3-scipy
-          sudo apt-get install -y -qq python3-numba || sudo pip3 install --break-system-packages -q "numba==0.60.0"
-          python3 -c "import numba, numpy; from osgeo import gdal; print(numba.__version__, numpy.__version__, gdal.__version__)"
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12", cache: pip}
+      - run: pip install -q -e .
       - name: Cache aus Release holen
         run: |
           mkdir -p cache
@@ -40,27 +49,27 @@ jobs:
         run: |
           mkdir -p out
           set -o pipefail
-          python3 scripts/fetch.py --name "$NAME" --canton "$CANTON" --bbox "${{ github.event.inputs.bbox || '8.65,47.36,9.52,47.71' }}" --cache cache 2>&1 | tee out/fetch_$NAME.txt
+          python -m kaltluft daten --name "$NAME" --canton "$CANTON" --bbox "${{ github.event.inputs.bbox || '8.65,47.36,9.52,47.71' }}" 2>&1 | tee out/daten_$NAME.txt
       - name: Cache sichern
         if: always()
         run: |
           T="cache-$NAME"
           gh release view "$T" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$T" -R "$GITHUB_REPOSITORY" \
             --latest=false -t "Cache Eingangsdaten $NAME" \
-            -n "Heruntergeladene Eingangsdaten, damit sie nicht jedes Mal neu geladen werden: swissALTI3D © swisstopo (2 m, 10-km-Kacheln), Vegetationshöhenmodell LiDAR LFI (BAFU/WSL), Kantonsgrenze swissBOUNDARIES3D © swisstopo."
+            -n "Heruntergeladene Eingangsdaten, damit sie nicht jedes Mal neu geladen werden: swissALTI3D © swisstopo (2 m, 10-km-Kacheln), Vegetationshöhenmodell LiDAR LFI (BAFU/WSL), ESA WorldCover 2021 (CC BY 4.0), Kantonsgrenze swissBOUNDARIES3D © swisstopo."
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$T" --paginate --jq '.assets[].name' | sort > have.txt
           (cd cache && ls -1 | grep -v -e '\.part$' -e '^tmp_' | sort) > all.txt
           comm -23 all.txt have.txt > new.txt
           echo "$(wc -l < new.txt) neue Dateien für den Cache"
           (cd cache && xargs -r -n 20 gh release upload "$T" -R "$GITHUB_REPOSITORY" --clobber) < new.txt
-      - name: Kaltluftseen suchen
+      - name: Kaltluftseen rechnen
         run: |
           set -o pipefail
-          /usr/bin/time -v python3 scripts/kaltluftseen.py --name "$NAME" --cache cache --out out ${{ github.event.inputs.args }} 2>&1 | tee out/log_$NAME.txt
+          /usr/bin/time -v python -m kaltluft rechnen --name "$NAME" ${{ github.event.inputs.args }} 2>&1 | tee out/log_$NAME.txt
       - name: Logs in Branch logs
         if: always()
         run: |
-          mkdir -p /tmp/l && cp out/* /tmp/l/ 2>/dev/null || true
+          mkdir -p /tmp/l && cp out/*.txt out/*.csv out/*.json out/*.png /tmp/l/ 2>/dev/null || true
           ls cache > /tmp/l/cache_inhalt.txt 2>/dev/null || true
           cd /tmp/l && git init -q && git checkout -q -b logs && git add -A
           git -c user.name=ci -c user.email=ci@localhost commit -q -m "Lauf ${{ github.run_id }} (${{ job.status }})" || exit 0
@@ -72,5 +81,5 @@ jobs:
         run: |
           T="kaltluftseen-$NAME"
           gh release view "$T" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || gh release create "$T" -R "$GITHUB_REPOSITORY" \
-            -t "Kaltluftseen $NAME" -n "Modellierte Kaltluftseen (Senken, Stau durch Vegetation, Talverengungen). Datenquelle: swissALTI3D © swisstopo; Vegetationshöhenmodell LiDAR LFI, BAFU/WSL. Modellrechnung, nicht gemessen."
+            -t "Kaltluftseen $NAME" -n "Modellierte Kaltluftseen (Senken, Stau durch Vegetation, Stau im Kaltluftabfluss) und Kaltluftströme. Datenquelle: swissALTI3D © swisstopo; Vegetationshöhenmodell LiDAR LFI, BAFU/WSL; ESA WorldCover 2021. Modellrechnung, nicht gemessen."
           gh release upload "$T" out/* -R "$GITHUB_REPOSITORY" --clobber

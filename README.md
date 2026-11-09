@@ -1,72 +1,121 @@
-# Kaltluftseen- und Highpoint-Finder
+# Kaltluftseen-Finder
 
-Sucht im Höhenmodell **swissALTI3D** (2 m) Orte, an denen sich in klaren, windstillen Nächten Kaltluft sammelt, und gibt
-sie als **GPX** aus (dazu GeoJSON und CSV). Standardgebiet: Kanton Thurgau.
+Sucht Orte, an denen sich in klaren, windstillen Nächten Kaltluft sammelt. Grundlage ist das Höhenmodell
+**swissALTI3D**, dazu Vegetationshöhe und Landbedeckung. Standardgebiet: Kanton Thurgau.
 
-## Arten von Kaltluftseen
+Zwei Verfahren laufen nacheinander und ergänzen sich:
 
-| Typ | Was | Wie gerechnet |
+| Verfahren | Raster | Findet | Art in der Ausgabe |
+|---|---|---|---|
+| **Senkenanalyse** | 5 m | geschlossene Mulden, Stau hinter Wald und Hecken | `Senke`, `Vegetation` |
+| **Kaltluftabfluss-Modell** | 20 m | wohin die Kaltluft fliesst, wo sie sich staut und liegen bleibt | `Stau` |
+
+## Das Modell
+
+### Senken
+
+Das Gelände wird mit Priority-Flood gefüllt. Jede Mulde, aus der Kaltluft nur über den tiefsten Randpunkt abfliessen
+kann, ist eine Senke. Wald und Hecken wirken als teildurchlässiger Damm: wirksame Oberfläche = Gelände +
+min(0,4 × Vegetationshöhe, 12 m), ab 3 m Vegetationshöhe. Läge der Spiegel ohne Bäume deutlich tiefer, heisst die Senke
+`Vegetation`. Je Senke: Volumen, Tiefe, Fläche, Überlaufpunkt, Kaltluft-Einzugsgebiet und Füllzeit.
+
+### Kaltluftabfluss
+
+Eine Kaltluftschicht entsteht auf dem Gelände, fliesst hangab, sammelt sich in den Tälern und staut sich an
+Engstellen. Gerechnet wird eine tiefengemittelte Schicht mit reduzierter Schwere g′ = g · ΔT / T
+(Flachwassergleichungen ohne Advektionsterm, wie in Ein-Schicht-Kaltluftmodellen üblich):
+
+```
+∂h/∂t + div(q) = P                         h Schichtdicke, q Volumenstrom je m Breite
+∂q/∂t = −g′ h ∇(z + h) − cd |q| q / h²
+```
+
+| Landnutzung | Produktion P (m³/m²h) | Widerstand |
 |---|---|---|
-| **Senke** | geschlossene Mulde | Priority-Flood-Füllung des Geländes |
-| **Vegetation** | Wald, Waldrand oder Hecke staut den Abfluss | Vegetation als teildurchlässiger Damm: Gelände + min(0,4 × Vegetationshöhe, 6 m), ab 3 m Vegetationshöhe |
-| **Talverengung** | Kaltluft fliesst ab, aber eine Engstelle lässt nicht alles durch | siehe unten |
+| Freiland (Wiese, Acker) | 12 | cd = 0,012 |
+| Wald | 8 | + 0,12 bis Baumhöhe, darüber abnehmend |
+| Siedlung | 1 | + 0,10 bis 8 m Höhe |
+| Wasser | 0 | wie Freiland |
 
-**Talverengung:** Alle ~20 m entlang der Tiefenlinien (ab 0,1 km² Einzugsgebiet) wird ein Querschnitt quer zum Tal
-gelegt. Gesucht ist die Kaltluftmächtigkeit *h*, bei der der kritische Abfluss Q = √(g′·A³/B) gleich der im
-Einzugsgebiet erzeugten Kaltluft ist (wirksam 3 m³ je m² und Stunde, Einzugsgebiet höchstens 10 km², g′ aus 3 K
-Temperaturdefizit, *h* höchstens 40 m). Wald und Hecken im Querschnitt lassen nur 30 % durch (`--veg-por`). Jeder
-Querschnitt wird ein virtueller Damm auf Höhe Tiefenlinie + *h*, danach wird wieder gefüllt. Ein Querschnitt endet am
-Rücken zum Nachbartal; liegt der Spiegel höher, fliesst die Kaltluft dort über und es gibt keinen Damm. Ebenso keinen
-Damm in offenem Gelände (Breite > 150 × *h*).
-Ein See zählt nur, wenn er im Haupttal oberhalb der Engstelle (bis 3 km) die Querschnitte um mindestens 2 m über deren
-eigenes Fliessniveau hinaus überstaut und das Tal dort auf Seespiegelhöhe mindestens doppelt so breit ist wie die
-Engstelle. Als Tiefe, Volumen und Umriss zählt nur dieser **Rückstau** (ab 0,5 m, ohne schmale Streifen), nicht die
-ohnehin fliessende Kaltluftschicht (die steht zusätzlich in der CSV).
+Wald kommt aus der Vegetationshöhe, Siedlung und Wasser aus ESA WorldCover. Am Rand des Gebiets fliesst die Kaltluft
+frei ab. Die Simulation startet ohne Kaltluft und wird zu mehreren Zeitpunkten ausgewertet (Standard 1, 2 und 4 h).
+Im Testgebiet (Aachtal bei Amriswil) ist der Zustand nach rund 2 bis 3 Stunden nahezu stationär.
 
-**Abgleich:** Die Produktionsrate 3 m³/(m²·h) ist so gewählt, dass der aus Erfahrung bekannte Kaltluftsee bei
-Geboltshausen (Fischweiher) herauskommt (Spiegel ~535 m). Mit Literaturwerten (10–20) werden die Seen viel zu gross.
-Ein einzelner Vergleichsort, weitere bekannte Orte würden die Einstellung verbessern.
+Ein **Kaltluftsee (`Stau`)** ist ein zusammenhängendes Gebiet, in dem die Schicht mindestens 5 m dick ist und
+langsamer als 0,2 m/s fliesst (`--see-schicht`, `--see-tempo`). Dort bleibt die Luft liegen und kühlt weiter aus.
+Dicke Schichten, die zügig fliessen, sind Kaltluftströme und keine Seen.
 
-Die Parameter lassen sich anpassen (`python3 scripts/kaltluftseen.py -h`), z.B. `--window x0,y0,x1,y1` für einen
-Ausschnitt.
+Für jede Senke steht zusätzlich in der Ausgabe, wie dick die Kaltluftschicht dort ist und wie schnell sie fliesst:
+eine Senke unter einem kräftigen Kaltluftstrom wird durchlüftet, eine unter stehender Luft nicht.
 
-Nicht berücksichtigt: Gebäude und Lärmschutzwände (nicht im Geländemodell), Wind, Durchlässe unter Dämmen
-(ein Bahndamm mit Bachdurchlass gilt als dicht, für Kaltluft meist zutreffend).
+### Grenzen
 
-**Nur Senken:** `--nur-senken --out-name thurgau_senken --min-volume 5000` rechnet nur Geländemulden (ohne Bäume,
-ohne Talverengungen). Für jeden See wird das **Kaltluft-Einzugsgebiet** bestimmt (alle Flächen, deren Fliessweg zuerst
-in diesen See führt) und die Füllzeit (Volumen ÷ Einzugsgebiet × Produktionsrate).
+- Konstantes Temperaturdefizit (3 K): kein Wärmehaushalt, die Schichtdicke ist keine Temperatur.
+- Kein übergeordneter Wind. Das Modell gilt für windschwache Strahlungsnächte.
+- 20-m-Raster: schmale Dämme, Lärmschutzwände und einzelne Gebäude sind nicht aufgelöst. `--res-fluss 10` rechnet
+  feiner (4-mal mehr Zellen, etwa 8-mal länger).
+- Durchlässe unter Dämmen fehlen im Geländemodell, ein Bahndamm gilt als dicht.
+- Nicht an Messungen geeicht. Die Parameter sind Literaturwerte (VDI 3787 Blatt 5) und lassen sich alle über die
+  Kommandozeile ändern. Die Version 1 hatte eine Produktionsrate von 3 m³/m²h an einem bekannten Kaltluftsee bei
+  Geboltshausen abgeglichen. Das galt für das damalige Verfahren (Talquerschnitte) und ist nicht übertragbar.
 
-## Ausgabe (Release `kaltluftseen-<name>`)
+## Ausgabe
 
-- `kaltluftseen_<name>.gpx`: ein Wegpunkt je See an der tiefsten Stelle. Name `KLS <Rang> <Volumen>`, sortiert nach
-  Volumen. Die Beschreibung enthält Typ, Grund des Staus, Fläche, maximale und mittlere Tiefe, Seespiegel und Abflusspunkt.
-- `kaltluftseen_<name>_top200.gpx`: nur die 200 grössten.
-- `kaltluftseen_<name>_umrisse.gpx`: Umrisse als Tracks.
-- `kaltluftseen_<name>.geojson`, `.csv`: alle Kennzahlen.
+Dateien in `out/`, auf GitHub im Release `kaltluftseen-<name>`:
 
-Volumen ist die beste Einzelzahl (Menge der gestauten Kaltluft). Für Frostgefahr an einem Punkt zählt eher die Tiefe.
+| Datei | Inhalt |
+|---|---|
+| `kaltluftseen_<name>.gpx` | Wegpunkt je Senke (tiefste Stelle) und je Kaltluftsee des Hauptzeitpunkts |
+| `kaltluftseen_<name>_top200.gpx` | die 200 grössten je Art |
+| `kaltluftseen_<name>_umrisse.gpx` | Umrisse als Tracks |
+| `kaltluftseen_<name>.geojson`, `.csv` | alle Objekte mit allen Kennzahlen, Kaltluftseen aller Zeitpunkte (`nach_h`) |
+| `kaltluft_<name>_<N>h.tif` | 4 Bänder: Schichtdicke (m), Fliessgeschwindigkeit (m/s), Volumenstrom (m²/s), Fliessrichtung (°) |
+| `kaltluft_<name>_beginn.tif` | Stunden, bis die Schicht 5 m dick ist |
+| `kaltluft_<name>_<N>h.png` | Übersichtskarte |
+| `parameter_<name>.json` | verwendete Einstellungen |
+
+Senken heissen `KLS <Rang> <Volumen>`, Kaltluftseen aus dem Strömungsmodell `Stau <Rang> <Fläche> <Dicke>`.
 
 ## Ablauf
 
 ```
-python3 scripts/fetch.py --name thurgau --canton 20 --cache cache    # lädt nur, was im Cache fehlt
-python3 scripts/kaltluftseen.py --name thurgau --cache cache --out out
+pip install -e .
+python -m kaltluft daten   --name thurgau --canton 20     # lädt nur, was im Cache fehlt
+python -m kaltluft rechnen --name thurgau
 ```
 
-Benötigt GDAL (Python), NumPy, SciPy, Numba. Rechenraster 5 m (`--res`), ganzer Thurgau braucht ~10 GB RAM.
+Ausschnitt statt ganzem Kanton (LV95): `--fenster 2735000,1264000,2744000,1272000` bei beiden Befehlen. Alle
+Einstellungen: `python -m kaltluft rechnen -h`. Nur Senken: `--ohne-stroemung`. Nur Geländemulden ohne Bäume:
+`--veg-k 0`.
 
-**Cache:** `fetch.py` legt alles in `cache/` ab (swissALTI3D als 10-km-Kacheln, Vegetationshöhe, Kantonsgrenze) und lädt
-beim nächsten Lauf nur Fehlendes. Auf GitHub sichert der Workflow den Cache im Release `cache-<name>` und holt ihn von
-dort zurück, die Originaldaten werden also nur einmal geladen.
+Ganzer Thurgau (Schätzung, hochgerechnet aus einem Ausschnitt von 13 × 12 km): Senken rund 5 Minuten und 9 GB RAM,
+Strömungsmodell bei 20 m rund 10 bis 20 Minuten.
 
-**GitHub:** Workflow „Kaltluftseen“ (startet bei Änderungen an `scripts/` oder manuell, mit Gebiet, Kantonsnummer und
-zusätzlichen Parametern).
+**Tests:** `pip install -e .[test] && pytest` (künstliches Gelände, ohne Netz).
+
+**Cache:** `daten` legt alles in `cache/` ab (10-km-Kacheln) und lädt beim nächsten Lauf nur Fehlendes. Auf GitHub
+sichert der Workflow den Cache im Release `cache-<name>`.
+
+**GitHub:** Workflow „Kaltluftseen“ startet bei Änderungen am Code auf `main` oder manuell (Gebiet, Kantonsnummer,
+zusätzliche Parameter).
+
+## Aufbau
+
+```
+kaltluft/daten.py      Eingangsdaten laden
+kaltluft/senken.py     Senkenanalyse (Priority-Flood)
+kaltluft/stroemung.py  Kaltluftabfluss-Modell
+kaltluft/seen.py       Kaltluftseen aus dem Strömungsfeld
+kaltluft/ausgabe.py    GPX, GeoJSON, CSV, GeoTIFF, Karten
+kaltluft/cli.py        Kommandozeile und Ablauf
+scripts/ecostress_*.py ECOSTRESS-Nachtaufnahmen (Oberflächentemperatur) zum Vergleich suchen
+```
 
 ## Daten
 
 - swissALTI3D © swisstopo (Open Government Data)
-- Vegetationshöhenmodell LiDAR LFI, BAFU/WSL (Landesforstinventar, aus swissSURFACE3D). Übernommen aus dem Release
-  `ch-vhm-<name>` von [render-baumhoehen-overlay](https://github.com/lorenzdenk/render-baumhoehen-overlay), sonst
-  direkt von data.geo.admin.ch.
+- Vegetationshöhenmodell LiDAR LFI, BAFU/WSL. Übernommen aus dem Release `ch-vhm-<name>` von
+  [render-baumhoehen-overlay](https://github.com/lorenzdenk/render-baumhoehen-overlay), sonst direkt von
+  data.geo.admin.ch.
+- ESA WorldCover 10 m 2021 v200 (CC BY 4.0)
 - Kantonsgrenze: swissBOUNDARIES3D © swisstopo
