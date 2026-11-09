@@ -1,0 +1,59 @@
+19:58:45 Höhenmodell lesen (35 Kacheln), Raster 5 m: 13476 x 7840 Zellen
+19:58:59 Vegetationshöhe lesen (67 Kacheln)
+19:59:24 Senken suchen
+20:00:27   2325 Senken: Senke 771, Vegetation 1554
+20:00:30 Landbedeckung lesen (35 Kacheln)
+20:00:36 Kaltluftabfluss simulieren: Raster 20 m, 3369 x 1960 Zellen, bis 4 h
+20:00:53    0.17 h: 68 Schritte, Schicht max. 29 m, Mittel 1.4 m
+20:01:06    0.33 h: 205 Schritte, Schicht max. 50 m, Mittel 2.8 m
+20:01:21    0.50 h: 370 Schritte, Schicht max. 67 m, Mittel 4.2 m
+20:01:38    0.67 h: 564 Schritte, Schicht max. 93 m, Mittel 5.5 m
+20:01:58    0.83 h: 782 Schritte, Schicht max. 109 m, Mittel 6.9 m
+20:02:21    1.00 h: 1016 Schritte, Schicht max. 119 m, Mittel 8.2 m
+20:02:43    1.17 h: 1262 Schritte, Schicht max. 135 m, Mittel 9.5 m
+20:03:07    1.33 h: 1519 Schritte, Schicht max. 144 m, Mittel 10.8 m
+20:03:30    1.50 h: 1780 Schritte, Schicht max. 143 m, Mittel 12.0 m
+20:03:53    1.67 h: 2037 Schritte, Schicht max. 137 m, Mittel 13.3 m
+20:04:16    1.83 h: 2290 Schritte, Schicht max. 135 m, Mittel 14.5 m
+20:04:40    2.00 h: 2543 Schritte, Schicht max. 136 m, Mittel 15.6 m
+20:05:03    2.17 h: 2798 Schritte, Schicht max. 138 m, Mittel 16.8 m
+20:05:26    2.33 h: 3053 Schritte, Schicht max. 138 m, Mittel 17.9 m
+20:05:49    2.50 h: 3308 Schritte, Schicht max. 137 m, Mittel 19.0 m
+20:06:12    2.67 h: 3563 Schritte, Schicht max. 137 m, Mittel 20.1 m
+20:06:35    2.83 h: 3818 Schritte, Schicht max. 137 m, Mittel 21.1 m
+20:06:58    3.00 h: 4073 Schritte, Schicht max. 137 m, Mittel 22.1 m
+20:07:22    3.17 h: 4328 Schritte, Schicht max. 137 m, Mittel 23.2 m
+20:07:45    3.33 h: 4583 Schritte, Schicht max. 137 m, Mittel 24.2 m
+20:08:08    3.50 h: 4838 Schritte, Schicht max. 137 m, Mittel 25.1 m
+20:08:31    3.67 h: 5093 Schritte, Schicht max. 137 m, Mittel 26.1 m
+20:08:55    3.83 h: 5348 Schritte, Schicht max. 137 m, Mittel 27.0 m
+20:09:19    4.00 h: 5603 Schritte, Schicht max. 137 m, Mittel 27.9 m
+20:09:19   erzeugt 82.45 km³ Kaltluft, davon noch 67.84 km³ im Gebiet
+20:09:29   nach 1 h: 309 Kaltluftseen (Stau), 5787 ha
+20:09:42   nach 2 h: 244 Kaltluftseen (Stau), 3599 ha
+20:09:54   nach 4 h: 169 Kaltluftseen (Stau), 2127 ha
+20:10:06 geschrieben: kaltluftseen_thurgau.gpx, kaltluftseen_thurgau_top200.gpx, kaltluftseen_thurgau_umrisse.gpx, kaltluftseen_thurgau.csv, kaltluftseen_thurgau.geojson
+20:10:06 fertig in 11.3 min
+	Command being timed: "python -m kaltluft rechnen --name thurgau"
+	User time (seconds): 2195.00
+	System time (seconds): 15.97
+	Percent of CPU this job got: 324%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 11:21.60
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5410728
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 3
+	Minor (reclaiming a frame) page faults: 4920160
+	Voluntary context switches: 17947
+	Involuntary context switches: 135533
+	Swaps: 0
+	File system inputs: 14720
+	File system outputs: 496976
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

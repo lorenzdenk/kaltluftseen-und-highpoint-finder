@@ -1,0 +1,41 @@
+19:53:04 Gebiet thurgau: LV95 2692317/1248320 - 2755680/1283504, 35 Kacheln à 10 km
+19:53:04 Höhenmodell vollständig im Cache
+19:53:04 Vegetationshöhe (Release): 32 Kacheln, davon 0 zu laden
+19:53:12   Landbedeckung 2690/1240 fertig
+19:53:19   Landbedeckung 2690/1250 fertig
+19:53:27   Landbedeckung 2690/1260 fertig
+19:53:35   Landbedeckung 2690/1270 fertig
+19:53:41   Landbedeckung 2690/1280 fertig
+19:53:48   Landbedeckung 2700/1240 fertig
+19:53:55   Landbedeckung 2700/1250 fertig
+19:54:02   Landbedeckung 2700/1260 fertig
+19:54:09   Landbedeckung 2700/1270 fertig
+19:54:16   Landbedeckung 2700/1280 fertig
+19:54:30   Landbedeckung 2710/1240 fertig
+19:54:44   Landbedeckung 2710/1250 fertig
+19:54:59   Landbedeckung 2710/1260 fertig
+19:55:14   Landbedeckung 2710/1270 fertig
+19:55:27   Landbedeckung 2710/1280 fertig
+19:55:34   Landbedeckung 2720/1240 fertig
+19:55:42   Landbedeckung 2720/1250 fertig
+19:55:50   Landbedeckung 2720/1260 fertig
+19:55:58   Landbedeckung 2720/1270 fertig
+19:56:06   Landbedeckung 2720/1280 fertig
+19:56:12   Landbedeckung 2730/1240 fertig
+19:56:19   Landbedeckung 2730/1250 fertig
+19:56:26   Landbedeckung 2730/1260 fertig
+19:56:33   Landbedeckung 2730/1270 fertig
+19:56:41   Landbedeckung 2730/1280 fertig
+19:56:49   Landbedeckung 2740/1240 fertig
+19:56:56   Landbedeckung 2740/1250 fertig
+19:57:03   Landbedeckung 2740/1260 fertig
+19:57:10   Landbedeckung 2740/1270 fertig
+19:57:18   Landbedeckung 2740/1280 fertig
+19:57:26   Landbedeckung 2750/1240 fertig
+19:57:33   Landbedeckung 2750/1250 fertig
+19:57:40   Landbedeckung 2750/1260 fertig
+19:57:47   Landbedeckung 2750/1270 fertig
+19:57:55   Landbedeckung 2750/1280 fertig
+19:58:28 Strassen im Cache
+19:58:32 Ortsnamen: 5642 im Cache
+19:58:32 Höhenmodell vollständig im Cache
